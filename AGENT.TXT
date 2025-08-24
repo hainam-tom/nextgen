@@ -1,0 +1,14 @@
+- admin/ hosts the Flask API, requirement file, admin dashboard, and admin-api.js helper. Run `python admin/api.py` after installing from `admin/requirements.txt`.
+- dashboard.css in admin/ adds styling for the dashboard and is served as a static file by the Flask app.
+- api.py loads Firebase credentials from `firebase-auth.json` when present, falling back to `clientSecret.json` or environment variables (FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL). Missing or invalid data disables Firestore and only local JSON snapshots are used.
+- products.json and accounts.json are written inside admin/ at runtime to mirror Firestore data and are git-ignored.
+- The Flask service listens on port 7890 and serves `dashboard.html` at `/admin` for product and account management.
+- user/ contains browser-ready pages. `auth.html` and `index.html` live alongside `src/js` and `src/css` assets and can be hosted separately.
+- auth.html posts registrations to `/accounts`, index.js dynamically links the admin button to `${location.hostname}:7890/admin`, and both scripts load libraries from CDNs.
+- clientSecret.json may be added inside admin/ with Firebase OAuth configuration but is ignored by git.
+- api.py validates product and account payloads with Pydantic models; install dependencies from `admin/requirements.txt` before running.
+- auth.js and index.js are loaded as ES modules and dynamically import validator and dayjs from CDNs.
+- The admin dashboard's helper script (`admin-api.js`) lazily loads axios via dynamic import and exposes CRUD helpers on `window.AdminAPI`.
+- api.py uses Flask-Talisman and restricted CORS; allowed origins can be set via the ALLOWED_ORIGINS environment variable.
+- auth.js provides an `esc` helper to sanitize HTML when rendering remembered accounts.
+- Local snapshots and secret keys are ignored by `.gitignore` to prevent accidental commits.

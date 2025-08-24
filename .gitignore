@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+firebase-auth.json
+clientSecret.json
+products.json
+accounts.json
+node_modules/
+.DS_Store
+

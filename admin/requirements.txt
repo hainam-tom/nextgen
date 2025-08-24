@@ -1,0 +1,8 @@
+flask
+firebase-admin
+python-dotenv
+flask-cors
+pydantic
+email-validator
+
+flask-talisman

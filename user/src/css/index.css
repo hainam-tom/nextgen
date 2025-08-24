@@ -1,0 +1,43 @@
+    :root { --radius: 16px; --radius-lg: 22px; --easing: cubic-bezier(.2,.8,.2,1) }
+    html, body { height: 100% }
+    body { -webkit-font-smoothing: antialiased }
+
+    /* One routed view at a time */
+    .view { display:none; animation: fadeSlideIn .28s var(--easing) both }
+    .view.active { display:block }
+    @keyframes fadeSlideIn { from { opacity:0; transform: translateY(6px) } to { opacity:1; transform: translateY(0) } }
+
+    /* Header */
+    .glass { background: color-mix(in oklab, var(--bs-body-bg) 88%, transparent); -webkit-backdrop-filter: blur(10px) saturate(1.1); backdrop-filter: blur(10px) saturate(1.1); border-bottom: 1px solid var(--bs-border-color) }
+    .navbar-brand .appmark { width:34px;height:34px }
+
+    /* Cards & placeholders (no external media) */
+    .card-surface { border-radius: var(--radius); border:1px solid var(--bs-border-color) }
+    .ph { position: relative; overflow: hidden; background: rgba(255,255,255,.06); border-radius: .75rem }
+    html[data-bs-theme="light"] .ph { background: #eef2f7 }
+    .ph::after { content:""; position:absolute; inset:0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,.12), transparent); animation: shimmer 1.2s infinite }
+    @keyframes shimmer { 100% { transform: translateX(100%) } }
+    .ph-img { aspect-ratio: 4/3 }
+
+    .product-card { transition: transform .14s var(--easing), box-shadow .18s var(--easing) }
+    .product-card:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(0,0,0,.12) }
+
+    /* Sticky subnav */
+    .sticky-subnav { position: sticky; top: 64px; z-index: 40; background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-radius: var(--radius); }
+
+    /* Utility */
+    .rounded-3xl { border-radius: var(--radius-lg) }
+    .shadow-soft { box-shadow: 0 12px 28px rgba(0,0,0,.12) }
+    .cursor-pointer { cursor:pointer }
+    .avatar { width:72px; height:72px; border-radius: 999px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--bs-border-color); background: rgba(255,255,255,.06) }
+    html[data-bs-theme="light"] .avatar { background: #eef2f7 }
+
+    /* Strength meter */
+    .strength { height:8px; border-radius: 6px; background: #343a40; overflow: hidden }
+    .strength > div { height: 100%; width: 0%; transition: width .25s var(--easing); }
+    @media (prefers-reduced-motion: no-preference) {
+      ::view-transition-old(root){ animation: vt-out .22s cubic-bezier(.2,.8,.2,1) both }
+      ::view-transition-new(root){ animation: vt-in  .22s cubic-bezier(.2,.8,.2,1) both }
+      @keyframes vt-out { to   { opacity:0; filter: blur(6px) } }
+      @keyframes vt-in  { from { opacity:0; filter: blur(6px) } }
+    }
