@@ -106,7 +106,28 @@
   // Render: Cart & Checkout
   // ------------------------------
   // Render the cart page
-  function renderCart(){ const cart = store.cart; const area = $qs('#cartArea'); if(!area) return; if(!cart.length){ area.innerHTML = `<div class='text-center text-secondary py-5'>Your cart is empty.</div>`; return; } const rows = cart.map(i=>{ const p = NM.catalog.find(p=> String(p.id)===String(i.id)); const title = safe(p?.title || `Item ${i.id}`); const price = p?.price ?? 0; const cat = safe(p?.category||''); return `<tr><td style="width:72px"><div class="ph" style="width:72px;height:54px;border-radius:.5rem"></div></td><td><a href="#/product?id=${encodeURIComponent(i.id)}">${title}</a><div class='small text-secondary'>${cat}</div></td><td>${money(price)}</td><td style="width:130px"><input type="number" min="1" value="${i.qty}" class="form-control form-control-sm" data-qty="${i.id}"></td><td class="fw-bold">${money(price * (i.qty||0))}</td><td><button class="btn btn-sm btn-outline-danger" data-del="${i.id}"><i class="bi bi-x"></i></button></td></tr>`; }).join(''); area.innerHTML = `<div class="table-responsive"><table class="table align-middle"><thead><tr><th></th><th>Item</th><th>Price</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead><tbody>${rows}</tbody></table></div><div class="d-flex justify-content-end gap-3"><div class="h5">Total: <span class="text-primary">${money(cartTotal())}</span></div></div>`; $$qs('[data-qty]', area).forEach(inp=> inp.onchange = ()=> setQty(inp.dataset.qty, inp.value) ); $$qs('[data-del]', area).forEach(btn=> btn.onclick = ()=> removeFromCart(btn.dataset.del) ); }
+  function renderCart(){
+    const cart = store.cart;
+    const area = $qs('#cartArea');
+    if(!area) return;
+    if(!cart.length){
+      area.innerHTML = `<div class='text-center text-secondary py-5'>Your cart is empty.</div>`;
+      return;
+    }
+    const rows = cart.map(i=>{
+      const p = NM.catalog.find(p=> String(p.id)===String(i.id));
+      const title = safe(p?.title || `Item ${i.id}`);
+      const price = p?.price ?? 0;
+      const cat = safe(p?.category||'');
+      return `<tr><td style="width:72px"><div class="ph" style="width:72px;height:54px;border-radius:.5rem"></div></td><td><a href="#/product?id=${encodeURIComponent(i.id)}">${title}</a><div class='small text-secondary'>${cat}</div></td><td>${money(price)}</td><td style="width:130px"><input type="number" min="1" value="${i.qty}" class="form-control form-control-sm" data-qty="${i.id}"></td><td class="fw-bold">${money(price * (i.qty||0))}</td><td><button class="btn btn-sm btn-outline-danger" data-del="${i.id}"><i class="bi bi-x"></i></button></td></tr>`;
+    }).join('');
+    area.innerHTML = `<div class="table-responsive"><table id="cartTable" class="table table-striped align-middle"><thead><tr><th></th><th>Item</th><th>Price</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead><tbody>${rows}</tbody></table></div><div class="d-flex justify-content-end gap-3"><div class="h5">Total: <span class="text-primary">${money(cartTotal())}</span></div></div>`;
+    $$qs('[data-qty]', area).forEach(inp=> inp.onchange = ()=> setQty(inp.dataset.qty, inp.value) );
+    $$qs('[data-del]', area).forEach(btn=> btn.onclick = ()=> removeFromCart(btn.dataset.del) );
+    if(window.jQuery && $.fn && $.fn.dataTable){
+      $('#cartTable').DataTable({ paging:false, info:false, searching:false, order:[[1,'asc']] });
+    }
+  }
   // Render the checkout form
   function renderCheckout(){ const cart = store.cart; const sum = $qs('#checkoutSummary'); if(sum) sum.innerHTML = cart.length ? cart.map(i=>{ const p = NM.catalog.find(p=> String(p.id)===String(i.id)); const title = safe(p?.title || `Item ${i.id}`); const price = p?.price ?? 0; return `<div class="d-flex justify-content-between"><div>${title} × ${i.qty}</div><div>${money(price*(i.qty||0))}</div></div>`; }).join('') + `<hr><div class="d-flex justify-content-between fw-bold"><div>Total</div><div>${money(cartTotal())}</div></div>` : `<div class='text-secondary'>Cart is empty.</div>`; // Validation (guarded if plugin missing)
     if (window.jQuery && $.fn && $.fn.validate) {

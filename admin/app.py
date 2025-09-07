@@ -37,6 +37,7 @@ from authlib.integrations.flask_client import OAuth
 import firebase_admin
 from firebase_admin import credentials, auth as fb_auth
 from pydantic import BaseModel, ValidationError, Field, EmailStr
+from typing import Optional
 import requests
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -74,7 +75,9 @@ app.config.update(
 )
 
 # CORS (same-origin requests for dashboard; keep modest defaults)
-_default_origins = "https://localhost,https://127.0.0.1,http://localhost,http://127.0.0.1"
+_default_origins = (
+    "https://localhost,https://127.0.0.1,http://localhost,http://127.0.0.1"
+)
 allowed_origins = os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",")
 CORS(app, resources={r"/*": {"origins": [o.strip() for o in allowed_origins]}})
 
@@ -101,6 +104,7 @@ oauth.register(
 # Firebase Admin SDK (for account management only; no client SDK in browser)
 # ---------------------------------------------------------------------------
 
+
 def load_credentials() -> dict:
     """Return service account credentials from file or environment."""
     auth_file = BASE_DIR / "firebase-auth.json"
@@ -122,6 +126,7 @@ def load_credentials() -> dict:
         "token_uri": "https://oauth2.googleapis.com/token",
     }
 
+
 FIREBASE_READY = False
 try:
     cred = credentials.Certificate(load_credentials())
@@ -129,6 +134,7 @@ try:
     FIREBASE_READY = True
 except Exception as exc:  # optional
     print(f"Firebase Admin disabled: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # Models
@@ -141,6 +147,18 @@ class ProductModel(BaseModel):
 class AccountModel(BaseModel):
     email: EmailStr
     name: str = ""
+
+
+class ProductUpdateModel(BaseModel):
+    name: Optional[str] = Field(None, min_length=1)
+    price: Optional[float] = Field(None, ge=0)
+
+
+class AccountUpdateModel(BaseModel):
+    email: Optional[EmailStr] = None
+    name: Optional[str] = None
+    disabled: Optional[bool] = None
+
 
 # ---------------------------------------------------------------------------
 # Local JSON helpers (PRODUCTS ONLY)
@@ -173,9 +191,40 @@ def append_product_local(doc: dict) -> str:
     safe_write_json(PRODUCT_FILE, items)
     return doc_id
 
+
+def get_product_local(doc_id: str) -> dict | None:
+    items = safe_read_json(PRODUCT_FILE)
+    for item in items:
+        if item.get("id") == doc_id:
+            return item
+    return None
+
+
+def update_product_local(doc_id: str, updates: dict) -> dict | None:
+    """Update product; returns updated product or None."""
+    items = safe_read_json(PRODUCT_FILE)
+    for item in items:
+        if item.get("id") == doc_id:
+            item.update({k: v for k, v in updates.items() if v is not None})
+            safe_write_json(PRODUCT_FILE, items)
+            return item
+    return None
+
+
+def delete_product_local(doc_id: str) -> bool:
+    """Remove product from local JSON store. Returns True if deleted."""
+    items = safe_read_json(PRODUCT_FILE)
+    new_items = [p for p in items if p.get("id") != doc_id]
+    if len(new_items) == len(items):
+        return False
+    safe_write_json(PRODUCT_FILE, new_items)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Admin session helpers (Google OAuth)
 # ---------------------------------------------------------------------------
+
 
 def current_user_email() -> str | None:
     user = session.get("user") or {}
@@ -196,11 +245,14 @@ def admin_required(fn):
                 return jsonify({"error": "Admin privileges required"}), 403
             return jsonify({"error": "Authentication required"}), 401
         return fn(*args, **kwargs)
+
     return wrapper
+
 
 # ---------------------------------------------------------------------------
 # End-user session helpers (Firebase session cookie)
 # ---------------------------------------------------------------------------
+
 
 def _gitkit_url(method: str) -> str:
     return f"https://identitytoolkit.googleapis.com/v1/accounts:{method}?key={FIREBASE_WEB_API_KEY}"
@@ -229,9 +281,13 @@ def current_user_from_cookie():
         return None
     try:
         decoded = fb_auth.verify_session_cookie(cookie, check_revoked=True)
-        return {"uid": decoded.get("uid"), "email": (decoded.get("email") or "").lower()}
+        return {
+            "uid": decoded.get("uid"),
+            "email": (decoded.get("email") or "").lower(),
+        }
     except Exception:
         return None
+
 
 # ---------------------------------------------------------------------------
 # OAuth routes (admin)
@@ -273,7 +329,7 @@ def auth_callback():
         "name": info.get("name") or "",
         "sub": info.get("sub") or "",
     }
-    session["is_admin"] = (email == ADMIN_EMAIL)
+    session["is_admin"] = email == ADMIN_EMAIL
     return redirect(url_for("admin_dashboard"))
 
 
@@ -281,6 +337,7 @@ def auth_callback():
 def logout():
     session.clear()
     return redirect(url_for("admin_dashboard"))
+
 
 # ---------------------------------------------------------------------------
 # End-user auth routes (password login via server)
@@ -296,7 +353,9 @@ def auth_register():
         name = (payload.get("name") or "").strip()
         if not email or not password or len(password) < 8:
             return jsonify({"error": "Email and password (>=8 chars) required"}), 400
-        user = fb_auth.create_user(email=email, password=password, display_name=name or None)
+        user = fb_auth.create_user(
+            email=email, password=password, display_name=name or None
+        )
         return jsonify({"id": user.uid}), 201
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -312,11 +371,15 @@ def auth_login():
         password = payload.get("password") or ""
         if not email or not password:
             return jsonify({"error": "Email and password are required"}), 400
-        r = requests.post(_gitkit_url("signInWithPassword"), json={
-            "email": email,
-            "password": password,
-            "returnSecureToken": True,
-        }, timeout=10)
+        r = requests.post(
+            _gitkit_url("signInWithPassword"),
+            json={
+                "email": email,
+                "password": password,
+                "returnSecureToken": True,
+            },
+            timeout=10,
+        )
         if r.status_code != 200:
             msg = r.json().get("error", {}).get("message", "INVALID_LOGIN")
             return jsonify({"error": f"Login failed: {msg}"}), 401
@@ -343,14 +406,20 @@ def auth_me():
     return jsonify(user)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Routes — Products (LOCAL) — admin required for create
 # ---------------------------------------------------------------------------
 @app.route("/products", methods=["GET"])
 def get_products():
     return jsonify(list_products_local())
+
+
+@app.route("/products/<product_id>", methods=["GET"])
+def get_product(product_id):
+    item = get_product_local(product_id)
+    if not item:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(item)
 
 
 @app.route("/products", methods=["POST"])
@@ -365,6 +434,30 @@ def create_product():
     doc_id = append_product_local(doc)
     return jsonify({"id": doc_id}), 201
 
+
+@app.route("/products/<product_id>", methods=["PUT"])
+@admin_required
+def update_product(product_id):
+    try:
+        payload = request.get_json(force=True) or {}
+        product = ProductUpdateModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+    updated = update_product_local(product_id, product.model_dump(exclude_none=True))
+    if not updated:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(updated)
+
+
+@app.route("/products/<product_id>", methods=["DELETE"])
+@admin_required
+def delete_product(product_id):
+    deleted = delete_product_local(product_id)
+    if not deleted:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"ok": True})
+
+
 # ---------------------------------------------------------------------------
 # Routes — Accounts (Firebase Admin only) — admin only
 # ---------------------------------------------------------------------------
@@ -376,16 +469,40 @@ def get_accounts():
     users = []
     try:
         for u in fb_auth.list_users().iterate_all():
-            users.append({
+            users.append(
+                {
+                    "id": u.uid,
+                    "email": u.email,
+                    "name": u.display_name or "",
+                    "disabled": bool(u.disabled),
+                    "email_verified": bool(u.email_verified),
+                }
+            )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(users)
+
+
+@app.route("/accounts/<uid>", methods=["GET"])
+@admin_required
+def get_account(uid):
+    if not FIREBASE_READY:
+        return jsonify({"error": "Firebase Admin not configured"}), 503
+    try:
+        u = fb_auth.get_user(uid)
+        return jsonify(
+            {
                 "id": u.uid,
                 "email": u.email,
                 "name": u.display_name or "",
                 "disabled": bool(u.disabled),
                 "email_verified": bool(u.email_verified),
-            })
+            }
+        )
+    except fb_auth.UserNotFoundError:
+        return jsonify({"error": "Not found"}), 404
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    return jsonify(users)
 
 
 @app.route("/accounts", methods=["POST"])
@@ -399,10 +516,60 @@ def create_account():
     except ValidationError as err:
         return jsonify({"error": err.errors()}), 400
     try:
-        user = fb_auth.create_user(email=account.email, display_name=account.name or None)
+        user = fb_auth.create_user(
+            email=account.email, display_name=account.name or None
+        )
         return jsonify({"id": user.uid}), 201
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/accounts/<uid>", methods=["PUT"])
+@admin_required
+def update_account(uid):
+    if not FIREBASE_READY:
+        return jsonify({"error": "Firebase Admin not configured"}), 503
+    try:
+        payload = request.get_json(force=True) or {}
+        account = AccountUpdateModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+    try:
+        fb_auth.update_user(
+            uid,
+            email=account.email,
+            display_name=account.name,
+            disabled=account.disabled,
+        )
+        updated = fb_auth.get_user(uid)
+        return jsonify(
+            {
+                "id": updated.uid,
+                "email": updated.email,
+                "name": updated.display_name or "",
+                "disabled": bool(updated.disabled),
+                "email_verified": bool(updated.email_verified),
+            }
+        )
+    except fb_auth.UserNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/accounts/<uid>", methods=["DELETE"])
+@admin_required
+def delete_account(uid):
+    if not FIREBASE_READY:
+        return jsonify({"error": "Firebase Admin not configured"}), 503
+    try:
+        fb_auth.delete_user(uid)
+        return jsonify({"ok": True})
+    except fb_auth.UserNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
 
 # ---------------------------------------------------------------------------
 # Admin dashboard (SSR). Accounts only shown to admin session.
@@ -431,6 +598,7 @@ def admin_dashboard():
         ADMIN_EMAIL=ADMIN_EMAIL,
     )
 
+
 # ---------------------------------------------------------------------------
 # Security headers
 # ---------------------------------------------------------------------------
@@ -439,6 +607,7 @@ def secure_headers(resp):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     return resp
+
 
 # ---------------------------------------------------------------------------
 # Entry point

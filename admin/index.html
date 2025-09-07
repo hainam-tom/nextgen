@@ -1,17 +1,19 @@
 <!doctype html>
-
 <html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Vendly Admin Dashboard</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/dataTables.bootstrap5.min.css"/>
+  <link rel="stylesheet" href="https://cdn.datatables.net/responsive/2.5.0/css/responsive.bootstrap5.min.css"/>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js@1.12.0/src/toastify.min.css"/>
   <link href="{{ url_for('static', filename='dashboard.css') }}" rel="stylesheet">
 </head>
 <body class="p-4">
   <h1 class="mb-4">Admin Dashboard</h1>
 
-  <!-- Auth bar -->
   <div class="d-flex align-items-center gap-2 mb-3">
     {% if user_email %}
       <span class="text-muted">Signed in as {{ user_email }}</span>
@@ -27,108 +29,219 @@
     </div>
   {% endif %}
 
-  <div class="card">
-    <h2>Products</h2>
-    <ul class="list-unstyled" id="productsList">
-      {% for p in products %}
-        <li>{{ p.name }} - {{ p.price }}</li>
-      {% endfor %}
-    </ul>
-    <form id="productForm" class="mt-3" {{ '' if is_admin else 'onSubmit="return false;"' }}>
-      <h3>Add Product</h3>
-      <div class="mb-2"><input class="form-control" name="name" placeholder="Name" required></div>
-      <div class="mb-2"><input class="form-control" name="price" placeholder="Price" required></div>
-      <button class="btn btn-primary" {{ '' if is_admin else 'disabled' }}>Create</button>
-    </form>
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h2 class="h5 mb-0">Products</h2>
+      {% if is_admin %}
+      <button class="btn btn-sm btn-primary" id="addProductBtn"><i class="bi bi-plus-circle me-1"></i>Add Product</button>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <table id="productsTable" class="table table-striped w-100"></table>
+    </div>
   </div>
 
   <div class="card">
-    <h2>Accounts</h2>
-    {% if is_admin %}
-      <ul class="list-unstyled" id="accountsList">
-        {% for a in accounts %}
-          <li>{{ a.email }}{% if a.name %} - {{ a.name }}{% endif %}</li>
-        {% endfor %}
-      </ul>
-      <form id="accountForm" class="mt-3">
-        <h3>Create Account</h3>
-        <div class="mb-2"><input class="form-control" name="email" placeholder="Email" required></div>
-        <div class="mb-2"><input class="form-control" name="name" placeholder="Name"></div>
-        <button class="btn btn-primary">Create</button>
-      </form>
-    {% else %}
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h2 class="h5 mb-0">Accounts</h2>
+      {% if is_admin %}
+      <button class="btn btn-sm btn-primary" id="addAccountBtn"><i class="bi bi-plus-circle me-1"></i>Add Account</button>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      {% if is_admin %}
+      <table id="accountsTable" class="table table-striped w-100"></table>
+      {% else %}
       <p class="text-muted">Sign in as admin to view and manage accounts.</p>
-    {% endif %}
+      {% endif %}
+    </div>
   </div>
 
-  <script type="module">
-  import "{{ url_for('static', filename='adminAPI.js') }}";
+  <!-- Product Modal -->
+  <div class="modal fade" id="productModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <form id="productForm">
+          <div class="modal-header">
+            <h5 class="modal-title">Product</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" name="id">
+            <div class="mb-3">
+              <input class="form-control" name="name" placeholder="Name" required>
+            </div>
+            <div class="mb-3">
+              <input class="form-control" name="price" type="number" step="0.01" placeholder="Price" required>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary" type="submit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
 
-  const productForm = document.getElementById('productForm');
-  productForm?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = e.target;
-    await window.AdminAPI.createProduct({ name: f.name.value, price: Number(f.price.value) });
-    f.reset();
-    location.reload();
-  });
+  <!-- Account Modal -->
+  <div class="modal fade" id="accountModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <form id="accountForm">
+          <div class="modal-header">
+            <h5 class="modal-title">Account</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" name="id">
+            <div class="mb-3">
+              <input class="form-control" name="email" placeholder="Email" required>
+            </div>
+            <div class="mb-3">
+              <input class="form-control" name="name" placeholder="Name">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary" type="submit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
 
-  const accountForm = document.getElementById('accountForm');
-  accountForm?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = e.target;
-    await window.AdminAPI.createAccount({ email: f.email.value, name: f.name.value });
-    f.reset();
-    location.reload();
-  });
-</script>
-
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.7/js/dataTables.bootstrap5.min.js"></script>
+  <script src="https://cdn.datatables.net/responsive/2.5.0/js/dataTables.responsive.min.js"></script>
+  <script src="https://cdn.datatables.net/responsive/2.5.0/js/responsive.bootstrap5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/toastify-js@1.12.0"></script>
   <script>
+    const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+  </script>
+  <script type="module">
     import "{{ url_for('static', filename='adminAPI.js') }}";
-    // Minimal JS: uses session-protected endpoints
-    const $ = (s, el=document)=>el.querySelector(s);
 
-    async function refreshProducts(){
-      try{
-        const items = await window.AdminAPI.getProducts();
-        $('#productsList').innerHTML = items.map(p=>`<li>${p.name} - ${p.price}</li>`).join('');
-      }catch(e){ console.error(e); }
+    const productModal = new bootstrap.Modal(document.getElementById('productModal'));
+    const accountModal = new bootstrap.Modal(document.getElementById('accountModal'));
+    const productForm = document.getElementById('productForm');
+    const accountForm = document.getElementById('accountForm');
+
+    const productsTable = $('#productsTable').DataTable({
+      columns: [
+        { title: 'Name', data: 'name' },
+        { title: 'Price', data: 'price', render: d => `$${Number(d).toFixed(2)}` },
+        ...(IS_ADMIN ? [{
+          title: 'Actions',
+          data: null,
+          orderable: false,
+          render: () => '<button class="btn btn-sm btn-secondary edit" title="Edit"><i class="bi bi-pencil"></i></button> <button class="btn btn-sm btn-danger delete" title="Delete"><i class="bi bi-trash"></i></button>'
+        }] : [])
+      ],
+      responsive: true,
+      autoWidth: false
+    });
+
+    async function loadProducts() {
+      const items = await window.AdminAPI.getProducts();
+      productsTable.clear().rows.add(items).draw();
     }
 
-    async function refreshAccounts(){
-      const list = $('#accountsList');
-      if(!list) return; // not visible for non-admin
-      try{
-        const users = await window.AdminAPI.getAccounts();
-        list.innerHTML = users.map(u=>`<li>${u.email}${u.name?` - ${u.name}`:''}</li>`).join('');
-      }catch(e){
-        list.innerHTML = `<li class="text-danger">${e.message}</li>`;
+    $('#productsTable').on('click', 'button.edit', function () {
+      const data = productsTable.row($(this).parents('tr')).data();
+      productForm.id.value = data.id;
+      productForm.name.value = data.name;
+      productForm.price.value = data.price;
+      productModal.show();
+    });
+
+    $('#productsTable').on('click', 'button.delete', async function () {
+      const data = productsTable.row($(this).parents('tr')).data();
+      if (confirm('Delete product?')) {
+        await window.AdminAPI.deleteProduct(data.id);
+        showToast('Product deleted', '#dc3545');
+        loadProducts();
       }
+    });
+
+    document.getElementById('addProductBtn')?.addEventListener('click', () => {
+      productForm.reset();
+      productForm.id.value = '';
+      productModal.show();
+    });
+
+    productForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = { name: productForm.name.value, price: Number(productForm.price.value) };
+      const id = productForm.id.value;
+      if (id) await window.AdminAPI.updateProduct(id, payload);
+      else await window.AdminAPI.createProduct(payload);
+      productModal.hide();
+      showToast(id ? 'Product updated' : 'Product added');
+      loadProducts();
+    });
+
+    const accountsTable = $('#accountsTable').length ? $('#accountsTable').DataTable({
+      columns: [
+        { title: 'Email', data: 'email' },
+        { title: 'Name', data: 'name' },
+        { title: 'Actions', data: null, orderable: false, render: () => '<button class="btn btn-sm btn-secondary edit" title="Edit"><i class="bi bi-pencil"></i></button> <button class="btn btn-sm btn-danger delete" title="Delete"><i class="bi bi-trash"></i></button>' }
+      ],
+      responsive: true,
+      autoWidth: false
+    }) : null;
+
+    async function loadAccounts() {
+      if (!accountsTable) return;
+      const items = await window.AdminAPI.getAccounts();
+      accountsTable.clear().rows.add(items).draw();
     }
 
-    document.getElementById('productForm')?.addEventListener('submit', async e=>{
-      e.preventDefault();
-      const f = e.target;
-      try{
-        await window.AdminAPI.createProduct({ name: f.name.value, price: Number(f.price.value) });
-        f.reset();
-        await refreshProducts();
-      }catch(e){ alert(e.message); }
+    $('#accountsTable').on('click', 'button.edit', function () {
+      const data = accountsTable.row($(this).parents('tr')).data();
+      accountForm.id.value = data.id;
+      accountForm.email.value = data.email;
+      accountForm.email.readOnly = true;
+      accountForm.name.value = data.name;
+      accountModal.show();
     });
 
-    document.getElementById('accountForm')?.addEventListener('submit', async e=>{
-      e.preventDefault();
-      const f = e.target;
-      try{
-        await window.AdminAPI.createAccount({ email: f.email.value, name: f.name.value });
-        f.reset();
-        await refreshAccounts();
-      }catch(e){ alert(e.message); }
+    $('#accountsTable').on('click', 'button.delete', async function () {
+      const data = accountsTable.row($(this).parents('tr')).data();
+      if (confirm('Delete account?')) {
+        await window.AdminAPI.deleteAccount(data.id);
+        showToast('Account deleted', '#dc3545');
+        loadAccounts();
+      }
     });
 
-    // Initial refresh after SSR snapshot
-    refreshProducts();
-    refreshAccounts();
+    document.getElementById('addAccountBtn')?.addEventListener('click', () => {
+      accountForm.reset();
+      accountForm.id.value = '';
+      accountForm.email.readOnly = false;
+      accountModal.show();
+    });
+
+    accountForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = { email: accountForm.email.value, name: accountForm.name.value };
+      const id = accountForm.id.value;
+      if (id) await window.AdminAPI.updateAccount(id, payload);
+      else await window.AdminAPI.createAccount(payload);
+      accountModal.hide();
+      showToast(id ? 'Account updated' : 'Account created');
+      loadAccounts();
+    });
+
+    function showToast(text, bg) {
+      Toastify({ text, duration: 2500, gravity: 'top', position: 'right', close: true, style: bg ? { background: bg } : {} }).showToast();
+    }
+
+    loadProducts();
+    loadAccounts();
   </script>
 </body>
 </html>
+
