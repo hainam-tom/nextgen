@@ -26,3 +26,12 @@ body {
   background-color: #ad0a87;
   border-color: #ad0a87;
 }
+
+table.dataTable td,
+table.dataTable th {
+  vertical-align: middle;
+}
+
+.btn.btn-sm i {
+  pointer-events: none;
+}
