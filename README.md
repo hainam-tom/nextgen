@@ -1,11 +1,13 @@
 # NextGen Marketplace
 
 ## Backend
-- Flask API in `admin/api.py` authenticates with Firebase via `firebase-auth.json`.
-- Mirrors Firestore data into `admin/products.json` and `admin/accounts.json` when available.
+- Flask app in `admin/app.py` manages products and accounts.
+- Products are stored locally in `admin/products.json`.
+- Accounts are managed through the Firebase Admin SDK (no client-side Firebase).
 
 ## Frontend
-- Browser-ready storefront lives under `user/` and loads products from `http://<host>:7890`.
-- Admin dashboard served from `/admin` to manage products and accounts.
+- Storefront lives under `user/` and loads products from the API.
+- Shopping cart uses a DataTable for sortable items.
+- Admin dashboard served from `/admin` uses Bootstrap 5 and DataTables for full CRUD.
 
-Run `pip install -r admin/requirements.txt` then `python admin/api.py` to start the service.
+Run `pip install -r admin/requirements.txt` then `python admin/app.py` to start the service.
