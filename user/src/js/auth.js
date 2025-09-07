@@ -21,7 +21,7 @@ const esc = (s) => {
 };
 
 // Same-origin so HttpOnly session cookie is sent automatically
-const API_URL = '';
+const API_URL = `127.0.0.1:7890`
 
 // Libraries
 const validatorLib = import('https://cdn.jsdelivr.net/npm/validator@13.9.0/validator.esm.js');

@@ -6,9 +6,6 @@
   const money = n => new Intl.NumberFormat(undefined, { style:'currency', currency:'USD' }).format(n||0);
   const safe = s => (window.DOMPurify ? DOMPurify.sanitize(String(s ?? ''), {ALLOWED_TAGS:[], ALLOWED_ATTR:[]}) : String(s ?? ''));
 
-  const API_URL = `${location.protocol}//${location.hostname}:7890`;
-  const adminLink = document.getElementById('navAdmin');
-  if (adminLink) adminLink.href = `${API_URL}/admin`;
 
   // Pull product catalog from backend API
   async function loadCatalog(){

@@ -2,7 +2,7 @@
 const axiosLib = import('https://cdn.jsdelivr.net/npm/axios@1.11.0/+esm');
 
 // point to backend running on port 7890 regardless of front-end port
-const API_URL = `${window.location.protocol}//${window.location.hostname}:7890`;
+const API_URL = `127.0.0.1:7890`
 
 async function apiFetch(path, options = {}) {
   try {
