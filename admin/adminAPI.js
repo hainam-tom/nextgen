@@ -7,7 +7,11 @@ const API_URL = window.location.origin;
 async function apiFetch(path, options = {}) {
   try {
     const axios = (await axiosLib).default;
-    const res = await axios({ url: `${API_URL}${path}`, ...options });
+    const res = await axios({
+      url: `${API_URL}${path}`,
+      withCredentials: true,
+      ...options,
+    });
     return res.data;
   } catch (err) {
     const status = err.response?.status || '';
@@ -28,4 +32,15 @@ function createAccount(account) { return apiFetch('/accounts', { method: 'post',
 function updateAccount(id, account) { return apiFetch(`/accounts/${id}`, { method: 'put', data: account }); }
 function deleteAccount(id) { return apiFetch(`/accounts/${id}`, { method: 'delete' }); }
 
-window.AdminAPI = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, getAccounts, getAccount, createAccount, updateAccount, deleteAccount };
+window.AdminAPI = {
+  getProducts,
+  getProduct,
+  createProduct,
+  updateProduct,
+  deleteProduct,
+  getAccounts,
+  getAccount,
+  createAccount,
+  updateAccount,
+  deleteAccount,
+};
