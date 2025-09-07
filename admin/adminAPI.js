@@ -1,8 +1,8 @@
 // static/admin-api.js
 const axiosLib = import('https://cdn.jsdelivr.net/npm/axios@1.11.0/+esm');
 
-// same-origin requests so cookies (session) are sent
-const API_URL = window.location.origin;
+// point to backend running on port 7890 regardless of front-end port
+const API_URL = `${window.location.protocol}//${window.location.hostname}:7890`;
 
 async function apiFetch(path, options = {}) {
   try {
