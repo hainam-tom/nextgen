@@ -7,5 +7,5 @@ __pycache__/
 #accounts.json
 node_modules/
 .DS_Store
-.env
 !scripts/.env
+.enc
