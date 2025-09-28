@@ -6,12 +6,204 @@
   const money = n => new Intl.NumberFormat(undefined, { style:'currency', currency:'USD' }).format(n||0);
   const safe = s => (window.DOMPurify ? DOMPurify.sanitize(String(s ?? ''), {ALLOWED_TAGS:[], ALLOWED_ATTR:[]}) : String(s ?? ''));
 
+  function resolveApiBase(){
+    const DEFAULT = 'https://127.0.0.1:7890';
+    try {
+      const { protocol, hostname } = window.location;
+      const safeProtocol = protocol === 'http:' || protocol === 'https:' ? protocol : 'https:';
+      const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
+      const port = '7890';
+      return `${safeProtocol}//${host}:${port}`;
+    } catch (err) {
+      console.warn('Falling back to default API base:', err);
+      return DEFAULT;
+    }
+  }
+
+  const API_URL = resolveApiBase();
+
+  function buildApiUrl(path = '/') {
+    const base = API_URL.replace(/\/$/, '');
+    const suffix = path.startsWith('/') ? path : `/${path}`;
+    return `${base}${suffix}`;
+  }
+
+  function normaliseRequestOptions(options = {}) {
+    const opts = {
+      method: (options.method || 'GET').toUpperCase(),
+      headers: { Accept: 'application/json' },
+    };
+
+    if (options.data !== undefined && options.data !== null) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = typeof options.data === 'string' ? options.data : JSON.stringify(options.data);
+    }
+
+    return opts;
+  }
+
+  function parseJsonText(status, statusText, text) {
+    if (!text) {
+      if (status >= 200 && status < 300) {
+        return null;
+      }
+      throw new Error(`Request failed (${status}): ${statusText || 'Unknown error'}`);
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (err) {
+      throw new Error('Server returned invalid JSON');
+    }
+
+    if (status >= 200 && status < 300) {
+      return payload;
+    }
+
+    const detail = (payload && (payload.error || payload.message)) || statusText || 'Request failed';
+    throw new Error(`Request failed (${status}): ${detail}`);
+  }
+
+  async function requestWithFetch(url, options) {
+    try {
+      const res = await fetch(url, { ...options, credentials: 'include' });
+      const text = await res.text();
+      return parseJsonText(res.status, res.statusText, text);
+    } catch (err) {
+      if (err instanceof TypeError) {
+        throw new Error('Network error');
+      }
+      throw err;
+    }
+  }
+
+  function requestWithXhr(url, options) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(options.method || 'GET', url, true);
+      xhr.withCredentials = true;
+      const headers = options.headers || {};
+      Object.keys(headers).forEach((key) => {
+        xhr.setRequestHeader(key, headers[key]);
+      });
+      xhr.onload = function () {
+        try {
+          const data = parseJsonText(xhr.status, xhr.statusText, xhr.responseText);
+          resolve(data);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      xhr.onerror = function () {
+        reject(new Error('Network error'));
+      };
+      xhr.send(options.body || null);
+    });
+  }
+
+  function apiRequest(path, options) {
+    const url = buildApiUrl(path);
+    const opts = normaliseRequestOptions(options);
+    if (typeof window.fetch === 'function') {
+      return requestWithFetch(url, opts);
+    }
+    return requestWithXhr(url, opts);
+  }
+
+  const isAuthError = (err) => Boolean(err && typeof err.message === 'string' && err.message.includes('(401)'));
+
+  const AccountGateway = (() => {
+    const emptyAddress = () => ({
+      line1: '',
+      line2: '',
+      city: '',
+      state: '',
+      postal_code: '',
+      country: '',
+    });
+
+    let profileCache = null;
+    let bankingCache = null;
+
+    const normaliseProfile = (data = {}) => ({
+      name: data.name || '',
+      email: data.email || '',
+      phone: data.phone || '',
+      avatar: data.avatar || null,
+      address: { ...emptyAddress(), ...(data.address || {}) },
+    });
+
+    const normaliseBanking = (data = {}) => ({
+      cardholder: data.cardholder || '',
+      card_last4: data.card_last4 || '',
+      brand: data.brand || '',
+      exp_month: data.exp_month || '',
+      exp_year: data.exp_year || '',
+      postal_code: data.billing_postal || data.postal_code || '',
+    });
+
+    async function loadProfile() {
+      try {
+        const result = await apiRequest('/me/profile');
+        profileCache = normaliseProfile(result || {});
+      } catch (err) {
+        if (isAuthError(err)) {
+          profileCache = null;
+          return null;
+        }
+        throw err;
+      }
+      return profileCache;
+    }
+
+    async function saveProfile(payload) {
+      const result = await apiRequest('/me/profile', { method: 'PUT', data: payload });
+      profileCache = normaliseProfile(result || {});
+      return profileCache;
+    }
+
+    function getProfile() {
+      return profileCache;
+    }
+
+    async function loadBanking() {
+      try {
+        const result = await apiRequest('/me/banking');
+        bankingCache = normaliseBanking(result || {});
+      } catch (err) {
+        if (isAuthError(err)) {
+          bankingCache = null;
+          return null;
+        }
+        throw err;
+      }
+      return bankingCache;
+    }
+
+    async function saveBanking(payload) {
+      const result = await apiRequest('/me/banking', { method: 'PUT', data: payload });
+      bankingCache = normaliseBanking(result || {});
+      return bankingCache;
+    }
+
+    function getBanking() {
+      return bankingCache;
+    }
+
+    return { loadProfile, saveProfile, getProfile, loadBanking, saveBanking, getBanking };
+  })();
+
+  function getCardDigits(value = ''){
+    return String(value || '').replace(/\D/g, '');
+  }
+
 
   // Pull product catalog from backend API
   async function loadCatalog(){
     try {
-      const { data } = await axios.get(`${API_URL}/products`);
-      NM.setCatalog(data);
+      const data = await apiRequest('/products');
+      NM.setCatalog(Array.isArray(data) ? data : []);
     } catch(err){
       console.error(err);
       toast('Failed to load catalog');
@@ -74,7 +266,25 @@
   function route(path, params={}){ const qs = new URLSearchParams(params).toString(); location.hash = path + (qs?`?${qs}`:''); }
 
   // React to hash changes and render matching view
-  function onRoute(){ const { path, params } = parseHash(); $$qs('.nav-link[data-nav]').forEach(a => a.classList.toggle('active', a.getAttribute('href')===`#${path}`)); $$qs('.view').forEach(v=>v.classList.remove('active')); const map = { '/home':'view-home', '/shop':'view-shop', '/product':'view-product', '/cart':'view-cart', '/checkout':'view-checkout', '/account':'view-account', '/account/password':'view-account-password', '/account/card':'view-account-card' }; const id = map[path] || 'view-home'; const view = document.getElementById(id); if(view) view.classList.add('active'); (routes[path] || routes['/home'])(params); }
+  function onRoute(){
+    const { path, params } = parseHash();
+    $$qs('.nav-link[data-nav]').forEach(a => a.classList.toggle('active', a.getAttribute('href')===`#${path}`));
+    $$qs('.view').forEach(v=>v.classList.remove('active'));
+    const map = { '/home':'view-home', '/shop':'view-shop', '/product':'view-product', '/cart':'view-cart', '/checkout':'view-checkout', '/account':'view-account', '/account/password':'view-account-password', '/account/card':'view-account-card' };
+    const id = map[path] || 'view-home';
+    const view = document.getElementById(id);
+    if(view) view.classList.add('active');
+    try {
+      const maybePromise = (routes[path] || routes['/home'])(params);
+      if(maybePromise && typeof maybePromise.then === 'function'){
+        maybePromise.catch(err => {
+          if(!isAuthError(err)) console.error(err);
+        });
+      }
+    } catch(err){
+      console.error(err);
+    }
+  }
   window.addEventListener('hashchange', onRoute);
 
   // ------------------------------
@@ -137,11 +347,137 @@
   // Render: Account & subpages (UI only)
   // ------------------------------
   // Render the account settings page
-  function renderAccount(){ const input = $qs('#accAvatarInput'); if(input){ input.onchange = () => { const f = input.files?.[0]; if(!f) return; if(!/^image\//.test(f.type)) return toast('Please choose an image file'); if(f.size > 2*1024*1024) return toast('Image must be under 2MB'); const url = URL.createObjectURL(f); const prev = $qs('#accAvatarPreview'); if(prev) prev.innerHTML = `<img src="${url}" alt="avatar" class="rounded-circle" style="width:100%;height:100%;object-fit:cover">`; }; }
-    if (window.jQuery && $.fn && $.fn.validate) {
-      $('#accForm').validate({ rules:{ accName:{required:true,minlength:2}, accEmail:{required:true,email:true}, accPhone:{required:false} }, errorClass:'is-invalid', validClass:'is-valid' });
+  function setAvatarPreview(dataUrl){
+    const prev = $qs('#accAvatarPreview');
+    if(!prev) return;
+    if(dataUrl){
+      prev.innerHTML = `<img src="${dataUrl}" alt="avatar" class="rounded-circle" style="width:100%;height:100%;object-fit:cover">`;
+    } else {
+      prev.innerHTML = '<i class="bi bi-person fs-4"></i>';
     }
-    const form = $qs('#accForm'); if(form){ form.onsubmit = (e)=>{ e.preventDefault(); if (window.jQuery && $.fn && $.fn.validate) { if(!$('#accForm').valid()) { toast('Please fix the highlighted fields'); return; } } else { if(!form.checkValidity()){ form.classList.add('was-validated'); toast('Please fix the highlighted fields'); return; } } toast('Saved'); }; }
+  }
+
+  async function refreshAccountShortcuts(){
+    try {
+      let profile = AccountGateway.getProfile();
+      if (!profile) {
+        profile = await AccountGateway.loadProfile();
+      }
+      if (profile) {
+        setAvatarPreview(profile.avatar || null);
+        const nameInput = $qs('#accName');
+        if (nameInput) nameInput.value = profile.name || '';
+        const emailInput = $qs('#accEmail');
+        if (emailInput) emailInput.value = profile.email || '';
+        const phoneInput = $qs('#accPhone');
+        if (phoneInput) phoneInput.value = profile.phone || '';
+        const addr = profile.address || {};
+        const line1 = $qs('#accLine1');
+        if (line1) line1.value = addr.line1 || '';
+        const line2 = $qs('#accLine2');
+        if (line2) line2.value = addr.line2 || '';
+        const city = $qs('#accCity');
+        if (city) city.value = addr.city || '';
+        const state = $qs('#accState');
+        if (state) state.value = addr.state || '';
+        const postal = $qs('#accPostal');
+        if (postal) postal.value = addr.postal_code || '';
+        const country = $qs('#accCountry');
+        if (country) country.value = addr.country || '';
+      }
+    } catch (err) {
+      if (!isAuthError(err)) {
+        console.warn('Failed to refresh profile', err);
+      }
+    }
+    await refreshCardShortcuts();
+  }
+
+  async function refreshCardShortcuts(){
+    try {
+      let card = AccountGateway.getBanking();
+      if (!card) {
+        card = await AccountGateway.loadBanking();
+      }
+      const last4 = card?.card_last4 || '';
+      const buttons = $$qs('#view-account a[href="#/account/card"]');
+      buttons.forEach(btn => {
+        const base = btn.dataset.label || btn.textContent.trim();
+        btn.dataset.label = base;
+        if (last4) {
+          btn.innerHTML = `${base} <span class="badge text-bg-secondary ms-1">\u2022\u2022\u2022\u2022 ${last4}</span>`;
+        } else {
+          btn.innerHTML = base;
+        }
+      });
+    } catch (err) {
+      if (!isAuthError(err)) {
+        console.warn('Failed to refresh card shortcuts', err);
+      }
+    }
+  }
+
+  async function renderAccount(){
+    await refreshAccountShortcuts();
+    const profile = AccountGateway.getProfile() || {};
+    let avatarData = profile.avatar || null;
+    const input = $qs('#accAvatarInput');
+    if(input){
+      input.value='';
+      input.onchange = () => {
+        const f = input.files?.[0];
+        if(!f) return;
+        if(!/^image\//.test(f.type)) return toast('Please choose an image file');
+        if(f.size > 2*1024*1024) return toast('Image must be under 2MB');
+        const reader = new FileReader();
+        reader.onload = () => {
+          avatarData = reader.result;
+          setAvatarPreview(avatarData);
+        };
+        reader.onerror = () => toast('Failed to read image');
+        reader.readAsDataURL(f);
+      };
+    }
+    if (window.jQuery && $.fn && $.fn.validate) {
+      $('#accForm').validate({ rules:{ accName:{required:true,minlength:2}, accEmail:{required:true,email:true}, accPhone:{required:false}, accLine1:{required:true,minlength:3}, accCity:{required:true}, accState:{required:true}, accPostal:{required:true}, accCountry:{required:true} }, errorClass:'is-invalid', validClass:'is-valid' });
+    }
+    const form = $qs('#accForm');
+    if(form){
+      form.onsubmit = async (e)=>{
+        e.preventDefault();
+        if (window.jQuery && $.fn && $.fn.validate) {
+          if(!$('#accForm').valid()) { toast('Please fix the highlighted fields'); return; }
+        } else {
+          if(!form.checkValidity()){ form.classList.add('was-validated'); toast('Please fix the highlighted fields'); return; }
+        }
+        const payload = {
+          name: form.accName.value.trim(),
+          email: form.accEmail.value.trim(),
+          phone: form.accPhone.value.trim(),
+          address: {
+            line1: form.accLine1.value.trim(),
+            line2: form.accLine2.value.trim(),
+            city: form.accCity.value.trim(),
+            state: form.accState.value.trim(),
+            postal_code: form.accPostal.value.trim(),
+            country: form.accCountry.value.trim(),
+          },
+        };
+        if(avatarData) payload.avatar = avatarData;
+        try {
+          await AccountGateway.saveProfile(payload);
+          await refreshAccountShortcuts();
+          toast('Profile saved');
+        } catch(err){
+          if (isAuthError(err)) {
+            toast('Please sign in to sync your profile');
+            return;
+          }
+          console.error(err);
+          toast('Failed to save profile');
+        }
+      };
+    }
   }
   // Render password change form
   function renderAccountPassword(){ const f = $qs('#pwdForm'); if(!f) return; if (window.jQuery && $.fn && $.fn.validate) { $('#pwdForm').validate({ rules:{ pwdCurrent:{required:true,minlength:8}, pwdNew:{required:true,minlength:8}, pwdConfirm:{required:true,equalTo:'#pwdNew'} }, errorClass:'is-invalid', validClass:'is-valid' }); }
@@ -149,9 +485,93 @@
     f.onsubmit = (e)=>{ e.preventDefault(); if (window.jQuery && $.fn && $.fn.validate) { if(!$('#pwdForm').valid()) { toast('Please fix the highlighted fields'); return; } } else { if(!f.checkValidity()){ f.classList.add('was-validated'); toast('Please fix the highlighted fields'); return; } if($qs('#pwdNew')?.value !== $qs('#pwdConfirm')?.value){ toast('Passwords do not match'); return; } } toast('Password updated'); route('/account'); };
   }
   // Render saved card form
-  function renderAccountCard(){ const f = $qs('#cardForm'); if(!f) return; if(window.Cleave){ new Cleave('#cardNumber', { creditCard: true }); new Cleave('#cardExpiry', { date: true, datePattern: ['m','y'] }); } if(window.Inputmask){ Inputmask({ mask: '9999' }).mask('#cardCvc'); Inputmask({ mask: '9{3,10}' }).mask('#cardZip'); }
-    if (window.jQuery && $.fn && $.fn.validate) { $('#cardForm').validate({ rules:{ cardName:{required:true,minlength:2}, cardNumber:{required:true,creditcard:true}, cardExpiry:{required:true}, cardCvc:{required:true,minlength:3}, cardZip:{required:true,minlength:3} }, errorClass:'is-invalid', validClass:'is-valid' }); }
-    f.onsubmit = (e)=>{ e.preventDefault(); if (window.jQuery && $.fn && $.fn.validate) { if(!$('#cardForm').valid()) { toast('Please fix the highlighted fields'); return; } } else { if(!f.checkValidity()){ f.classList.add('was-validated'); toast('Please fix the highlighted fields'); return; } } toast('Card saved'); route('/account'); };
+  function parseExpiry(value=''){
+    const digits = getCardDigits(value);
+    if(digits.length < 4) return null;
+    const month = Number(digits.slice(0,2));
+    const yearPart = Number(digits.slice(2,4));
+    if(month < 1 || month > 12) return null;
+    const year = yearPart + (yearPart < 100 ? 2000 : 0);
+    return { month, year };
+  }
+
+  async function renderAccountCard(){
+    const f = $qs('#cardForm');
+    if(!f) return;
+    let cleaveNumber = null;
+    let cleaveExpiry = null;
+    if(window.Cleave){
+      cleaveNumber = new Cleave('#cardNumber', { creditCard: true });
+      cleaveExpiry = new Cleave('#cardExpiry', { date: true, datePattern: ['m','y'] });
+    }
+    if(window.Inputmask){
+      Inputmask({ mask: '9999' }).mask('#cardCvc');
+      Inputmask({ mask: '9{3,10}' }).mask('#cardZip');
+    }
+    let stored = AccountGateway.getBanking();
+    try {
+      if(!stored){
+        stored = await AccountGateway.loadBanking();
+      }
+      if(stored){
+        if(stored.cardholder) f.cardName.value = stored.cardholder;
+        if(stored.postal_code) f.cardZip.value = stored.postal_code;
+        if(stored.exp_month && stored.exp_year){
+          const mm = String(stored.exp_month).padStart(2, '0');
+          const yy = String(stored.exp_year).slice(-2);
+          if(cleaveExpiry){ cleaveExpiry.setRawValue(mm + yy); }
+          else { f.cardExpiry.value = `${mm}/${yy}`; }
+        }
+        f.cardNumber.placeholder = stored.card_last4 ? `•••• ${stored.card_last4}` : f.cardNumber.placeholder;
+      }
+    } catch(err){
+      if (!isAuthError(err)) {
+        console.error(err);
+        toast('Failed to load saved card');
+      }
+    }
+    if (window.jQuery && $.fn && $.fn.validate) {
+      $('#cardForm').validate({ rules:{ cardName:{required:true,minlength:2}, cardNumber:{required:true,creditcard:true}, cardExpiry:{required:true}, cardCvc:{required:true,minlength:3}, cardZip:{required:true,minlength:3} }, errorClass:'is-invalid', validClass:'is-valid' });
+    }
+    f.onsubmit = async (e)=>{
+      e.preventDefault();
+      if (window.jQuery && $.fn && $.fn.validate) {
+        if(!$('#cardForm').valid()) { toast('Please fix the highlighted fields'); return; }
+      } else {
+        if(!f.checkValidity()){ f.classList.add('was-validated'); toast('Please fix the highlighted fields'); return; }
+      }
+      const expiry = parseExpiry(f.cardExpiry.value);
+      if(!expiry){ toast('Please enter a valid expiry date'); return; }
+      const payload = {
+        cardholder: f.cardName.value.trim(),
+        card_number: getCardDigits(f.cardNumber.value),
+        exp_month: expiry.month,
+        exp_year: expiry.year,
+        cvc: getCardDigits(f.cardCvc.value),
+        postal_code: f.cardZip.value.trim(),
+      };
+      try {
+        const saved = await AccountGateway.saveBanking(payload);
+        if(cleaveNumber){ cleaveNumber.setRawValue(''); } else { f.cardNumber.value = ''; }
+        if(cleaveExpiry){ cleaveExpiry.setRawValue(''); } else { f.cardExpiry.value = ''; }
+        f.cardCvc.value = '';
+        if(saved){
+          f.cardName.value = saved.cardholder || '';
+          f.cardZip.value = saved.postal_code || f.cardZip.value;
+          f.cardNumber.placeholder = saved.card_last4 ? `•••• ${saved.card_last4}` : '';
+        }
+        await refreshCardShortcuts();
+        toast('Card saved');
+        route('/account');
+      } catch(err){
+        if (isAuthError(err)) {
+          toast('Please sign in to save your card');
+          return;
+        }
+        console.error(err);
+        toast('Failed to save card');
+      }
+    };
   }
 
   // ------------------------------
@@ -198,6 +618,7 @@
     applyTheme(localStorage.getItem('nm_theme'));
     loadCatalog();
     onRoute();
+    refreshAccountShortcuts();
     if(!location.hash) route('/home');
     // Mask numeric price inputs if library is available
     if(window.Inputmask){ const els = document.querySelectorAll('#minPrice,#maxPrice'); if(els.length) Inputmask({ alias: 'decimal', groupSeparator: ',', autoGroup: true, digits: 2, digitsOptional: true, rightAlign: false }).mask(els); }

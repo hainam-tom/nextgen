@@ -21,17 +21,114 @@ const esc = (s) => {
 };
 
 // Same-origin so HttpOnly session cookie is sent automatically
-const API_URL = `127.0.0.1:7890`
+function resolveApiBase() {
+  const DEFAULT = 'https://127.0.0.1:7890';
+  try {
+    const { protocol, hostname } = window.location;
+    const safeProtocol = protocol === 'http:' || protocol === 'https:' ? protocol : 'https:';
+    const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
+    const port = '7890';
+    return `${safeProtocol}//${host}:${port}`;
+  } catch (err) {
+    console.warn('Falling back to default auth API base:', err);
+    return DEFAULT;
+  }
+}
+
+const API_URL = resolveApiBase();
 
 // Libraries
 const validatorLib = import('https://cdn.jsdelivr.net/npm/validator@13.9.0/validator.esm.js');
-const axiosLib = import('https://cdn.jsdelivr.net/npm/axios@1.11.0/+esm');
 
-// Lightweight HTTP helper (uses axios ESM)
-async function http(path, method = 'get', data) {
-  const axios = (await axiosLib).default;
-  const res = await axios({ url: API_URL + path, method, data });
-  return res.data;
+function buildApiUrl(path = '/') {
+  const base = API_URL.replace(/\/$/, '');
+  const suffix = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
+function normaliseHttpOptions(method, data) {
+  const options = {
+    method: (method || 'GET').toUpperCase(),
+    headers: { Accept: 'application/json' },
+  };
+
+  if (data !== undefined && data !== null) {
+    options.headers['Content-Type'] = 'application/json';
+    options.body = typeof data === 'string' ? data : JSON.stringify(data);
+  }
+
+  return options;
+}
+
+function parseResponsePayload(status, statusText, text) {
+  if (!text) {
+    if (status >= 200 && status < 300) {
+      return null;
+    }
+    throw new Error(`Auth request failed (${status}): ${statusText || 'Unknown error'}`);
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (err) {
+    throw new Error('Auth service returned invalid JSON');
+  }
+
+  if (status >= 200 && status < 300) {
+    return payload;
+  }
+
+  const detail = (payload && (payload.error || payload.message)) || statusText || 'Request failed';
+  throw new Error(`Auth request failed (${status}): ${detail}`);
+}
+
+async function requestWithFetch(path, method, data) {
+  const url = buildApiUrl(path);
+  const options = normaliseHttpOptions(method, data);
+  try {
+    const res = await fetch(url, { ...options, credentials: 'include' });
+    const text = await res.text();
+    return parseResponsePayload(res.status, res.statusText, text);
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error('Network error');
+    }
+    throw err;
+  }
+}
+
+function requestWithXhr(path, method, data) {
+  const url = buildApiUrl(path);
+  const options = normaliseHttpOptions(method, data);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(options.method, url, true);
+    xhr.withCredentials = true;
+    const headers = options.headers || {};
+    Object.keys(headers).forEach((key) => {
+      xhr.setRequestHeader(key, headers[key]);
+    });
+    xhr.onload = function () {
+      try {
+        const payload = parseResponsePayload(xhr.status, xhr.statusText, xhr.responseText);
+        resolve(payload);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    xhr.onerror = function () {
+      reject(new Error('Network error'));
+    };
+    xhr.send(options.body || null);
+  });
+}
+
+function http(path, method = 'get', data) {
+  if (typeof window.fetch === 'function') {
+    return requestWithFetch(path, method, data);
+  }
+  return requestWithXhr(path, method, data);
 }
 
 // ========= ACCOUNT STORAGE (UI only / localStorage) =========

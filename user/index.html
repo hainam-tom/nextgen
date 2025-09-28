@@ -214,6 +214,30 @@
                 <input class="form-control" id="accPhone" name="accPhone" inputmode="tel" autocomplete="tel" maxlength="20">
               </div>
               <div class="col-12">
+                <label class="form-label">Address line 1</label>
+                <input class="form-control" id="accLine1" name="accLine1" autocomplete="address-line1" required>
+              </div>
+              <div class="col-12">
+                <label class="form-label">Address line 2</label>
+                <input class="form-control" id="accLine2" name="accLine2" autocomplete="address-line2">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">City</label>
+                <input class="form-control" id="accCity" name="accCity" autocomplete="address-level2" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">State / Region</label>
+                <input class="form-control" id="accState" name="accState" autocomplete="address-level1" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">Postal code</label>
+                <input class="form-control" id="accPostal" name="accPostal" autocomplete="postal-code" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Country</label>
+                <input class="form-control" id="accCountry" name="accCountry" autocomplete="country-name" required>
+              </div>
+              <div class="col-12">
                 <button class="btn btn-primary" type="submit">Save</button>
               </div>
             </form>
@@ -290,7 +314,6 @@
   <script src="https://cdn.jsdelivr.net/npm/inputmask@5.0.9/dist/inputmask.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/zxcvbn/4.4.2/zxcvbn.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
 
   <script type="module" src="src/js/index.js"></script>
 </body>

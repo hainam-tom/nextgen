@@ -111,6 +111,113 @@
     </div>
   </div>
 
+  <!-- Account drawer -->
+  <div class="offcanvas offcanvas-end" tabindex="-1" id="accountDetails" aria-labelledby="accountDetailsLabel">
+    <div class="offcanvas-header">
+      <div>
+        <h5 class="offcanvas-title" id="accountDetailsLabel">Account details</h5>
+        <div class="text-muted small" id="accountDetailsSub"></div>
+      </div>
+      <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+    <div class="offcanvas-body">
+      <div id="accountDetailsSpinner" class="text-center text-secondary py-4 d-none">
+        <div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>
+      </div>
+      <div id="accountDetailsForms" class="d-grid gap-4">
+        <form id="accountProfileForm" class="row g-2" novalidate>
+          <input type="hidden" name="id">
+          <div class="col-12">
+            <h6 class="text-uppercase text-secondary small mb-1">Profile &amp; address</h6>
+            <p class="text-muted small mb-2">Saved to <code>accounts.json</code>.</p>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" required>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Email</label>
+            <input class="form-control" name="email" type="email" readonly>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Phone</label>
+            <input class="form-control" name="phone" placeholder="Optional">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Address line 1</label>
+            <input class="form-control" name="line1" required>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Address line 2</label>
+            <input class="form-control" name="line2" placeholder="Optional">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">City</label>
+            <input class="form-control" name="city" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">State / Region</label>
+            <input class="form-control" name="state" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Postal code</label>
+            <input class="form-control" name="postal_code" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Country</label>
+            <input class="form-control" name="country" required>
+          </div>
+          <div class="col-12 d-flex justify-content-end gap-2">
+            <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="offcanvas">Close</button>
+            <button class="btn btn-primary" type="submit">Save profile</button>
+          </div>
+        </form>
+
+        <hr>
+
+        <form id="accountBankingForm" class="row g-2" novalidate>
+          <input type="hidden" name="id">
+          <div class="col-12">
+            <h6 class="text-uppercase text-secondary small mb-1">Banking (encrypted)</h6>
+            <p class="text-muted small mb-2">Persisted to <code>banking.enc</code> using AES-256 (Fernet).</p>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Cardholder</label>
+            <input class="form-control" name="cardholder" required>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Card number</label>
+            <input class="form-control" name="card_number" inputmode="numeric" autocomplete="off" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Expiry month</label>
+            <input class="form-control" name="exp_month" type="number" min="1" max="12" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Expiry year</label>
+            <input class="form-control" name="exp_year" type="number" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">CVC</label>
+            <input class="form-control" name="cvc" inputmode="numeric" autocomplete="off" required>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Billing postal code</label>
+            <input class="form-control" name="postal_code" required>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Brand (optional override)</label>
+            <input class="form-control" name="brand" placeholder="auto-detected">
+          </div>
+          <div class="col-12 d-flex justify-content-end gap-2">
+            <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="offcanvas">Close</button>
+            <button class="btn btn-primary" type="submit">Save banking</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
@@ -128,6 +235,13 @@
     const accountModal = new bootstrap.Modal(document.getElementById('accountModal'));
     const productForm = document.getElementById('productForm');
     const accountForm = document.getElementById('accountForm');
+    const accountDetailsElement = document.getElementById('accountDetails');
+    const accountDetailsDrawer = accountDetailsElement ? new bootstrap.Offcanvas(accountDetailsElement) : null;
+    const accountDetailsSpinner = document.getElementById('accountDetailsSpinner');
+    const accountDetailsForms = document.getElementById('accountDetailsForms');
+    const accountDetailsSub = document.getElementById('accountDetailsSub');
+    const accountProfileForm = document.getElementById('accountProfileForm');
+    const accountBankingForm = document.getElementById('accountBankingForm');
 
     const productsTable = $('#productsTable').DataTable({
       columns: [
@@ -145,8 +259,14 @@
     });
 
     async function loadProducts() {
-      const items = await window.AdminAPI.getProducts();
-      productsTable.clear().rows.add(items).draw();
+      try {
+        const items = await window.AdminAPI.getProducts();
+        productsTable.clear().rows.add(items).draw();
+      } catch (err) {
+        console.error(err);
+        productsTable.clear().draw();
+        showToast(err.message || 'Failed to load products', '#dc3545');
+      }
     }
 
     $('#productsTable').on('click', 'button.edit', function () {
@@ -160,9 +280,14 @@
     $('#productsTable').on('click', 'button.delete', async function () {
       const data = productsTable.row($(this).parents('tr')).data();
       if (confirm('Delete product?')) {
-        await window.AdminAPI.deleteProduct(data.id);
-        showToast('Product deleted', '#dc3545');
-        loadProducts();
+        try {
+          await window.AdminAPI.deleteProduct(data.id);
+          showToast('Product deleted', '#dc3545');
+          loadProducts();
+        } catch (err) {
+          console.error(err);
+          showToast(err.message || 'Failed to delete product', '#dc3545');
+        }
       }
     });
 
@@ -176,18 +301,23 @@
       e.preventDefault();
       const payload = { name: productForm.name.value, price: Number(productForm.price.value) };
       const id = productForm.id.value;
-      if (id) await window.AdminAPI.updateProduct(id, payload);
-      else await window.AdminAPI.createProduct(payload);
-      productModal.hide();
-      showToast(id ? 'Product updated' : 'Product added');
-      loadProducts();
+      try {
+        if (id) await window.AdminAPI.updateProduct(id, payload);
+        else await window.AdminAPI.createProduct(payload);
+        productModal.hide();
+        showToast(id ? 'Product updated' : 'Product added');
+        loadProducts();
+      } catch (err) {
+        console.error(err);
+        showToast(err.message || 'Unable to save product', '#dc3545');
+      }
     });
 
     const accountsTable = $('#accountsTable').length ? $('#accountsTable').DataTable({
       columns: [
         { title: 'Email', data: 'email' },
         { title: 'Name', data: 'name' },
-        { title: 'Actions', data: null, orderable: false, render: () => '<button class="btn btn-sm btn-secondary edit" title="Edit"><i class="bi bi-pencil"></i></button> <button class="btn btn-sm btn-danger delete" title="Delete"><i class="bi bi-trash"></i></button>' }
+        { title: 'Actions', data: null, orderable: false, render: () => '<div class="btn-group btn-group-sm" role="group"><button class="btn btn-primary details" title="Details"><i class="bi bi-person-lines-fill"></i></button><button class="btn btn-secondary edit" title="Edit"><i class="bi bi-pencil"></i></button><button class="btn btn-danger delete" title="Delete"><i class="bi bi-trash"></i></button></div>' }
       ],
       responsive: true,
       autoWidth: false
@@ -195,9 +325,97 @@
 
     async function loadAccounts() {
       if (!accountsTable) return;
-      const items = await window.AdminAPI.getAccounts();
-      accountsTable.clear().rows.add(items).draw();
+      try {
+        const items = await window.AdminAPI.getAccounts();
+        accountsTable.clear().rows.add(items).draw();
+      } catch (err) {
+        console.error(err);
+        accountsTable.clear().draw();
+        showToast(err.message || 'Failed to load accounts', '#dc3545');
+      }
     }
+
+    function toggleAccountDetailsLoading(loading) {
+      if (!accountDetailsSpinner || !accountDetailsForms) return;
+      accountDetailsSpinner.classList.toggle('d-none', !loading);
+      accountDetailsForms.classList.toggle('d-none', loading);
+    }
+
+    function populateProfileForm(data = {}, fallback = {}) {
+      if (!accountProfileForm) return;
+      const form = accountProfileForm;
+      form.reset();
+      form.elements.id.value = fallback.id || data.uid || '';
+      form.elements.name.value = data.name || fallback.name || '';
+      form.elements.email.value = data.email || fallback.email || '';
+      form.elements.phone.value = data.phone || '';
+      const address = data.address || {};
+      form.elements.line1.value = address.line1 || '';
+      form.elements.line2.value = address.line2 || '';
+      form.elements.city.value = address.city || '';
+      form.elements.state.value = address.state || '';
+      form.elements.postal_code.value = address.postal_code || '';
+      form.elements.country.value = address.country || '';
+      form.dataset.email = form.elements.email.value;
+    }
+
+    function populateBankingForm(data = {}) {
+      if (!accountBankingForm) return;
+      const form = accountBankingForm;
+      form.reset();
+      form.elements.id.value = data.uid || form.elements.id.value;
+      form.elements.cardholder.value = data.cardholder || '';
+      form.elements.card_number.value = data.card_number || '';
+      form.elements.exp_month.value = data.exp_month || '';
+      form.elements.exp_year.value = data.exp_year || '';
+      form.elements.cvc.value = data.cvc || '';
+      form.elements.postal_code.value = data.billing_postal || data.postal_code || '';
+      form.elements.brand.value = data.brand || '';
+      form.dataset.last4 = data.card_last4 || '';
+      form.elements.card_number.placeholder = data.card_last4 ? `•••• ${data.card_last4}` : '';
+      form.elements.cvc.placeholder = data.has_cvc ? 'Stored securely' : '';
+    }
+
+    async function openAccountDetails(rowData) {
+      if (!accountDetailsDrawer || !rowData) return;
+      toggleAccountDetailsLoading(true);
+      accountDetailsSub.textContent = rowData.email || '';
+      if (accountProfileForm) {
+        accountProfileForm.elements.id.value = rowData.id || '';
+      }
+      if (accountBankingForm) {
+        accountBankingForm.elements.id.value = rowData.id || '';
+      }
+      accountDetailsDrawer.show();
+      try {
+        const [profile, banking] = await Promise.all([
+          window.AdminAPI.getAccountProfile(rowData.id),
+          window.AdminAPI.getAccountBanking(rowData.id)
+        ]);
+        populateProfileForm(profile, rowData);
+        populateBankingForm({ ...banking, uid: rowData.id });
+        const summaryParts = [];
+        const email = profile.email || rowData.email;
+        if (email) summaryParts.push(email);
+        if (banking.card_last4) {
+          summaryParts.push(`•••• ${banking.card_last4}`);
+        }
+        if (profile.address && profile.address.country) {
+          summaryParts.push(profile.address.country);
+        }
+        accountDetailsSub.textContent = summaryParts.join(' • ');
+      } catch (err) {
+        console.error(err);
+        showToast(err.message || 'Failed to load account details', '#dc3545');
+      } finally {
+        toggleAccountDetailsLoading(false);
+      }
+    }
+
+    $('#accountsTable').on('click', 'button.details', function () {
+      const data = accountsTable.row($(this).parents('tr')).data();
+      openAccountDetails(data);
+    });
 
     $('#accountsTable').on('click', 'button.edit', function () {
       const data = accountsTable.row($(this).parents('tr')).data();
@@ -211,9 +429,14 @@
     $('#accountsTable').on('click', 'button.delete', async function () {
       const data = accountsTable.row($(this).parents('tr')).data();
       if (confirm('Delete account?')) {
-        await window.AdminAPI.deleteAccount(data.id);
-        showToast('Account deleted', '#dc3545');
-        loadAccounts();
+        try {
+          await window.AdminAPI.deleteAccount(data.id);
+          showToast('Account deleted', '#dc3545');
+          loadAccounts();
+        } catch (err) {
+          console.error(err);
+          showToast(err.message || 'Failed to delete account', '#dc3545');
+        }
       }
     });
 
@@ -228,11 +451,93 @@
       e.preventDefault();
       const payload = { email: accountForm.email.value, name: accountForm.name.value };
       const id = accountForm.id.value;
-      if (id) await window.AdminAPI.updateAccount(id, payload);
-      else await window.AdminAPI.createAccount(payload);
-      accountModal.hide();
-      showToast(id ? 'Account updated' : 'Account created');
-      loadAccounts();
+      try {
+        if (id) await window.AdminAPI.updateAccount(id, payload);
+        else await window.AdminAPI.createAccount(payload);
+        accountModal.hide();
+        showToast(id ? 'Account updated' : 'Account created');
+        loadAccounts();
+      } catch (err) {
+        console.error(err);
+        showToast(err.message || 'Unable to save account', '#dc3545');
+      }
+    });
+
+    accountProfileForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!accountProfileForm.reportValidity()) {
+        showToast('Please complete the required fields', '#dc3545');
+        return;
+      }
+      const id = accountProfileForm.elements.id.value;
+      if (!id) return;
+      const payload = {
+        name: accountProfileForm.elements.name.value.trim(),
+        email: (accountProfileForm.elements.email.value || '').trim(),
+        phone: accountProfileForm.elements.phone.value.trim(),
+        address: {
+          line1: accountProfileForm.elements.line1.value.trim(),
+          line2: accountProfileForm.elements.line2.value.trim(),
+          city: accountProfileForm.elements.city.value.trim(),
+          state: accountProfileForm.elements.state.value.trim(),
+          postal_code: accountProfileForm.elements.postal_code.value.trim(),
+          country: accountProfileForm.elements.country.value.trim(),
+        },
+      };
+      try {
+        const saved = await window.AdminAPI.updateAccountProfile(id, payload);
+        populateProfileForm(saved, saved);
+        showToast('Profile saved');
+        loadAccounts();
+        if (accountDetailsSub) {
+          const last4 = accountBankingForm?.dataset.last4 || '';
+          const summaryParts = [];
+          if (saved.email) summaryParts.push(saved.email);
+          if (last4) summaryParts.push(`•••• ${last4}`);
+          if (saved.address?.country) summaryParts.push(saved.address.country);
+          accountDetailsSub.textContent = summaryParts.filter(Boolean).join(' • ');
+        }
+      } catch (err) {
+        console.error(err);
+        showToast(err.message || 'Failed to save profile', '#dc3545');
+      }
+    });
+
+    accountBankingForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!accountBankingForm.reportValidity()) {
+        showToast('Please complete the required fields', '#dc3545');
+        return;
+      }
+      const id = accountBankingForm.elements.id.value;
+      if (!id) return;
+      const payload = {
+        cardholder: accountBankingForm.elements.cardholder.value.trim(),
+        card_number: accountBankingForm.elements.card_number.value.replace(/\s+/g, ''),
+        exp_month: Number(accountBankingForm.elements.exp_month.value),
+        exp_year: Number(accountBankingForm.elements.exp_year.value),
+        cvc: accountBankingForm.elements.cvc.value.trim(),
+        postal_code: accountBankingForm.elements.postal_code.value.trim(),
+        brand: accountBankingForm.elements.brand.value.trim(),
+      };
+      if (!payload.brand) delete payload.brand;
+      try {
+        const saved = await window.AdminAPI.updateAccountBanking(id, payload);
+        populateBankingForm({ ...saved, uid: id });
+        if (accountDetailsSub) {
+          const summaryParts = [];
+          const profileEmail = accountProfileForm?.elements?.email?.value;
+          if (profileEmail) summaryParts.push(profileEmail);
+          if (saved.card_last4) summaryParts.push(`•••• ${saved.card_last4}`);
+          const country = accountProfileForm?.elements?.country?.value;
+          if (country) summaryParts.push(country);
+          accountDetailsSub.textContent = summaryParts.filter(Boolean).join(' • ');
+        }
+        showToast('Banking details saved');
+      } catch (err) {
+        console.error(err);
+        showToast(err.message || 'Failed to save banking details', '#dc3545');
+      }
     });
 
     function showToast(text, bg) {

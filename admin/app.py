@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import json
 import datetime
+import re
 from pathlib import Path
 from uuid import uuid4
 from functools import wraps
@@ -36,9 +37,11 @@ from flask_talisman import Talisman
 from authlib.integrations.flask_client import OAuth
 import firebase_admin
 from firebase_admin import credentials, auth as fb_auth
-from pydantic import BaseModel, ValidationError, Field, EmailStr
+from pydantic import BaseModel, ValidationError, Field, EmailStr, field_validator
 from typing import Optional
 import requests
+
+from .storage import EncryptedJsonStore, JsonStore, StoreError
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -49,6 +52,7 @@ load_dotenv(BASE_DIR / ".env")
 
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "tom05012013@gmail.com").lower()
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-change-me")
+BANKING_SECRET_KEY = os.environ.get("BANKING_SECRET_KEY", SECRET_KEY)
 
 # Google OAuth (server-side)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
@@ -160,10 +164,68 @@ class AccountUpdateModel(BaseModel):
     disabled: Optional[bool] = None
 
 
+class AddressModel(BaseModel):
+    line1: str = Field(..., min_length=1, max_length=200)
+    line2: str = Field("", max_length=200)
+    city: str = Field(..., min_length=1, max_length=120)
+    state: str = Field(..., min_length=1, max_length=120)
+    postal_code: str = Field(..., min_length=1, max_length=20)
+    country: str = Field(..., min_length=1, max_length=80)
+
+
+class AccountProfileModel(BaseModel):
+    name: str = ""
+    email: Optional[EmailStr] = None
+    phone: str = ""
+    avatar: Optional[str] = None
+    address: AddressModel
+
+
+CURRENT_YEAR = datetime.datetime.now(datetime.UTC).year
+
+
+class BankingModel(BaseModel):
+    cardholder: str = Field(..., min_length=2, max_length=120)
+    card_number: str = Field(..., min_length=12, max_length=19)
+    exp_month: int = Field(..., ge=1, le=12)
+    exp_year: int = Field(..., ge=CURRENT_YEAR, le=CURRENT_YEAR + 20)
+    cvc: str = Field(..., min_length=3, max_length=4)
+    postal_code: str = Field("", max_length=20)
+    brand: str = ""
+
+    @staticmethod
+    def _digits(value: str) -> str:
+        digits = re.sub(r"\D", "", value or "")
+        return digits
+
+    @classmethod
+    def _validate_digits(cls, value: str, field: str, minimum: int, maximum: int) -> str:
+        digits = cls._digits(value)
+        if len(digits) < minimum or len(digits) > maximum:
+            raise ValueError(f"{field} must contain between {minimum} and {maximum} digits")
+        return digits
+
+    @field_validator("card_number", mode="before")
+    @classmethod
+    def validate_card_number(cls, value: str) -> str:  # noqa: D401
+        """Ensure the card number only contains digits and is realistic."""
+        return cls._validate_digits(str(value), "Card number", 12, 19)
+
+    @field_validator("cvc", mode="before")
+    @classmethod
+    def validate_cvc(cls, value: str) -> str:
+        return cls._validate_digits(str(value), "CVC", 3, 4)
+
+
 # ---------------------------------------------------------------------------
 # Local JSON helpers (PRODUCTS ONLY)
 # ---------------------------------------------------------------------------
 PRODUCT_FILE = BASE_DIR / "products.json"
+PROFILE_FILE = BASE_DIR / "accounts.json"
+BANKING_FILE = BASE_DIR / "banking.enc"
+
+PROFILE_STORE = JsonStore(PROFILE_FILE)
+BANKING_STORE = EncryptedJsonStore(BANKING_FILE, BANKING_SECRET_KEY)
 
 
 def safe_write_json(path: Path, data: list) -> None:
@@ -171,11 +233,21 @@ def safe_write_json(path: Path, data: list) -> None:
 
 
 def safe_read_json(path: Path) -> list:
-    if Path(path).exists():
-        try:
-            return json.loads(Path(path).read_text(encoding="utf-8"))
-        except Exception:
-            return []
+    """Return a list from ``path`` or ``[]`` if the file is missing/corrupt."""
+
+    if not Path(path).exists():
+        return []
+
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    if isinstance(data, list):
+        return data
+
+    # The product file was tampered with or an older format wrote an object.
+    # Returning an empty list keeps the API available instead of raising.
     return []
 
 
@@ -221,6 +293,87 @@ def delete_product_local(doc_id: str) -> bool:
     return True
 
 
+def _blank_address() -> dict:
+    return {
+        "line1": "",
+        "line2": "",
+        "city": "",
+        "state": "",
+        "postal_code": "",
+        "country": "",
+    }
+
+
+def load_profile(uid: str, email_hint: str | None = None) -> dict:
+    stored = PROFILE_STORE.get(uid, {}) or {}
+    address = {**_blank_address(), **(stored.get("address") or {})}
+    return {
+        "uid": uid,
+        "email": email_hint or stored.get("email") or "",
+        "name": stored.get("name", ""),
+        "phone": stored.get("phone", ""),
+        "avatar": stored.get("avatar"),
+        "address": address,
+    }
+
+
+def save_profile(uid: str, profile: AccountProfileModel, *, email_override: str | None = None) -> dict:
+    payload = profile.model_dump()
+    if email_override:
+        payload["email"] = email_override
+    else:
+        payload["email"] = (payload.get("email") or "").lower()
+    if payload.get("avatar") is None:
+        payload.pop("avatar", None)
+    payload["address"] = profile.address.model_dump()
+    PROFILE_STORE.put(uid, payload)
+    return load_profile(uid, payload.get("email"))
+
+
+def detect_card_brand(card_number: str) -> str:
+    digits = re.sub(r"\D", "", card_number or "")
+    if digits.startswith("4"):
+        return "visa"
+    if digits[:2] in {"51", "52", "53", "54", "55"} or (
+        digits[:4].isdigit() and 2221 <= int(digits[:4]) <= 2720
+    ):
+        return "mastercard"
+    if digits.startswith("34") or digits.startswith("37"):
+        return "amex"
+    if digits.startswith("6011") or digits.startswith("65"):
+        return "discover"
+    if digits.startswith("35"):
+        return "jcb"
+    if digits.startswith("30") or digits.startswith("36") or digits.startswith("38"):
+        return "diners"
+    return "other"
+
+
+def save_banking(uid: str, payload: BankingModel) -> dict:
+    record = payload.model_dump()
+    record["card_number"] = payload.card_number  # ensure digits-only
+    record["brand"] = payload.brand or detect_card_brand(payload.card_number)
+    BANKING_STORE.put(uid, record)
+    return record
+
+
+def banking_summary(record: dict | None, *, reveal: bool = False) -> dict:
+    record = record or {}
+    summary = {
+        "cardholder": record.get("cardholder", ""),
+        "brand": record.get("brand", ""),
+        "card_last4": (record.get("card_number") or "")[-4:],
+        "exp_month": record.get("exp_month"),
+        "exp_year": record.get("exp_year"),
+        "billing_postal": record.get("postal_code", ""),
+    }
+    if reveal:
+        summary["card_number"] = record.get("card_number")
+        summary["cvc"] = record.get("cvc")
+    summary["has_cvc"] = bool(record.get("cvc"))
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Admin session helpers (Google OAuth)
 # ---------------------------------------------------------------------------
@@ -244,6 +397,18 @@ def admin_required(fn):
             if session.get("user"):
                 return jsonify({"error": "Admin privileges required"}), 403
             return jsonify({"error": "Authentication required"}), 401
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def user_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user_from_cookie()
+        if not user:
+            return jsonify({"error": "Authentication required"}), 401
+        kwargs["current_user"] = user
         return fn(*args, **kwargs)
 
     return wrapper
@@ -404,6 +569,41 @@ def auth_me():
     if not user:
         return jsonify({"error": "Not authenticated"}), 401
     return jsonify(user)
+
+
+@app.route("/me/profile", methods=["GET", "PUT"])
+@user_required
+def me_profile(current_user):
+    if request.method == "GET":
+        return jsonify(load_profile(current_user["uid"], current_user.get("email")))
+    try:
+        payload = request.get_json(force=True) or {}
+        profile = AccountProfileModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+    saved = save_profile(current_user["uid"], profile, email_override=current_user.get("email"))
+    return jsonify(saved)
+
+
+@app.route("/me/banking", methods=["GET", "PUT"])
+@user_required
+def me_banking(current_user):
+    try:
+        record = BANKING_STORE.get(current_user["uid"], {})
+    except StoreError as exc:
+        return jsonify({"error": str(exc)}), 500
+    if request.method == "GET":
+        return jsonify(banking_summary(record))
+    try:
+        payload = request.get_json(force=True) or {}
+        banking = BankingModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+    try:
+        record = save_banking(current_user["uid"], banking)
+    except StoreError as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(banking_summary(record))
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +769,48 @@ def delete_account(uid):
         return jsonify({"error": "Not found"}), 404
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/accounts/<uid>/profile", methods=["GET", "PUT"])
+@admin_required
+def admin_account_profile(uid):
+    email_hint = None
+    if FIREBASE_READY:
+        try:
+            fb_user = fb_auth.get_user(uid)
+            email_hint = (fb_user.email or "").lower()
+        except Exception:
+            email_hint = None
+    if request.method == "GET":
+        return jsonify(load_profile(uid, email_hint))
+    try:
+        payload = request.get_json(force=True) or {}
+        profile = AccountProfileModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+    saved = save_profile(uid, profile, email_override=email_hint or profile.email)
+    return jsonify(saved)
+
+
+@app.route("/accounts/<uid>/banking", methods=["GET", "PUT"])
+@admin_required
+def admin_account_banking(uid):
+    try:
+        record = BANKING_STORE.get(uid, {})
+    except StoreError as exc:
+        return jsonify({"error": str(exc)}), 500
+    if request.method == "GET":
+        return jsonify(banking_summary(record, reveal=True))
+    try:
+        payload = request.get_json(force=True) or {}
+        banking = BankingModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+    try:
+        record = save_banking(uid, banking)
+    except StoreError as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(banking_summary(record, reveal=True))
 
 
 # ---------------------------------------------------------------------------
