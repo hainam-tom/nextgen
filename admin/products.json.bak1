@@ -68,5 +68,12 @@
     "price": 10.0,
     "description": "Integer posuere erat a ante venenatis dapibus posuere velit aliquet.",
     "image": null
+  },
+  {
+    "name": "asdsad",
+    "price": 1.0,
+    "description": "sadsad",
+    "image": null,
+    "id": "4be3956f-0e04-4797-b050-0a567b36cfd5"
   }
 ]

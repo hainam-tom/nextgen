@@ -72,8 +72,8 @@ ACCOUNT_ENCRYPTION_SECRET = os.environ.get("ACCOUNT_ENCRYPTION_SECRET", SECRET_K
 REVIEW_SECRET_KEY = os.environ.get("REVIEW_SECRET_KEY", ACCOUNT_ENCRYPTION_SECRET)
 FORCE_TLS = env_bool("FORCE_TLS", True)
 API_HOST = os.environ.get("API_HOST", "0.0.0.0")
-API_PORT = int(os.environ.get("API_PORT", "80"))
-PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", str(API_PORT)))
+API_PORT = int(80)
+PUBLIC_PORT = int(str(API_PORT))
 PUBLIC_DOMAIN = os.environ.get("PUBLIC_DOMAIN", "").strip().lower()
 PUBLIC_FALLBACK_HOST = os.environ.get("PUBLIC_FALLBACK_HOST", "").strip()
 TLS_CERT_FILE = os.environ.get("TLS_CERT_FILE", "").strip()
@@ -1635,5 +1635,5 @@ if __name__ == "__main__":
     elif FORCE_TLS:
         ssl_ctx = "adhoc"
     else:
-        ssl_ctx = None
+        ssl_ctx = "adhoc"
     app.run(host=API_HOST, port=API_PORT, ssl_context=ssl_ctx)
