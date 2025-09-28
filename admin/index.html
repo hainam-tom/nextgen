@@ -22,11 +22,25 @@
     {% else %}
       <a class="btn btn-outline-primary btn-sm" href="/login">Sign in with Google</a>
     {% endif %}
+    {% if is_service_manager %}
+      <a class="btn btn-sm btn-primary" href="/admin/setup">Admin setup</a>
+    {% endif %}
   </div>
+
+  {% if login_error %}
+    <div class="alert alert-danger">{{ login_error }}</div>
+  {% endif %}
 
   {% if not is_admin %}
     <div class="alert alert-warning">
-      You’re not signed in as the admin (<code>{{ ADMIN_EMAIL or 'tom05012013@gmail.com' }}</code>). Actions are disabled.
+      {% if is_service_manager %}
+        You’re signed in as the service manager (<code>{{ service_manager_email }}</code>). Use the
+        <a href="/admin/setup" class="alert-link">admin setup</a> flow to grant dashboard access to a Google account, then
+        sign in again with that account.
+      {% else %}
+        You don’t have admin rights yet. Contact the service manager
+        (<code>{{ service_manager_email }}</code>) to be added as an admin via Firebase.
+      {% endif %}
     </div>
   {% endif %}
 
@@ -101,6 +115,10 @@
             </div>
             <div class="mb-3">
               <input class="form-control" name="name" placeholder="Name">
+            </div>
+            <div class="mb-3">
+              <input class="form-control" name="password" type="password" placeholder="Temporary password (optional)" autocomplete="new-password">
+              <div class="form-text">Leave blank to auto-generate a secure password.</div>
             </div>
           </div>
           <div class="modal-footer">
@@ -424,6 +442,7 @@
       accountForm.email.value = data.email;
       accountForm.email.readOnly = true;
       accountForm.name.value = data.name;
+      accountForm.password.value = '';
       accountModal.show();
     });
 
@@ -451,12 +470,24 @@
     accountForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const payload = { email: accountForm.email.value, name: accountForm.name.value };
+      const password = accountForm.password.value.trim();
+      if (password) payload.password = password;
       const id = accountForm.id.value;
       try {
-        if (id) await window.AdminAPI.updateAccount(id, payload);
-        else await window.AdminAPI.createAccount(payload);
+        let result;
+        if (id) result = await window.AdminAPI.updateAccount(id, payload);
+        else result = await window.AdminAPI.createAccount(payload);
         accountModal.hide();
-        showToast(id ? 'Account updated' : 'Account created');
+        if (result && result.password) {
+          try {
+            await navigator.clipboard.writeText(result.password);
+            showToast(`Password copied to clipboard: ${result.password}`);
+          } catch (err) {
+            showToast(`Temporary password: ${result.password}`);
+          }
+        } else {
+          showToast(id ? 'Account updated' : 'Account created');
+        }
         loadAccounts();
       } catch (err) {
         console.error(err);

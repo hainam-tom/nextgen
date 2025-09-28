@@ -1,14 +1,16 @@
 """Simple Flask API for product and account management.
 
-- Products are stored **locally** (JSON file).
-- Accounts are managed via **Firebase Admin SDK** (create/list users). No
-  Firestore and **no Firebase client in the browser**.
-- **Admin authentication** is server-side **Google OAuth (OIDC)** using
-  Authlib. The admin session is stored in a server-side cookie; only the
-  `ADMIN_EMAIL` may create products, create accounts, or view all accounts.
-- **End-user auth** uses Firebase Identity Toolkit via server-only REST to
-  verify password and mint a secure **session cookie**. No Firebase config
-  on the client.
+- Products, shopper credentials, and profile data are persisted to local
+  JSON stores with redundant backups for self-hosted resilience.
+- Admin access is granted via the Firebase Admin SDK by tagging specific
+  Google accounts with an ``is_admin`` custom claim. Only the configured
+  service manager can enrol new admins, and Firebase is never exposed to the
+  browser.
+- Admin authentication uses server-side Google OAuth (OIDC) with Authlib;
+  sessions are stored server-side and restricted to accounts tagged as admins.
+- Shopper authentication is provided entirely by the Flask API using
+  bcrypt-strength password hashing and signed session cookies—no Firebase
+  dependency for end-users.
 """
 
 from __future__ import annotations
@@ -36,12 +38,14 @@ from dotenv import load_dotenv
 from flask_cors import CORS
 from flask_talisman import Talisman
 from firebase_admin import credentials, auth as fb_auth
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from pydantic import BaseModel, ValidationError, Field, EmailStr, field_validator
 from typing import Optional
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import generate_password_hash, check_password_hash
 import firebase_admin
-import requests
 from urllib.parse import urlparse
+import secrets
 
 from .storage import EncryptedJsonStore, JsonStore, StoreError
 
@@ -150,7 +154,11 @@ def infer_allowed_origins(
     return deduped
 
 
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "tom05012013@gmail.com").lower()
+SERVICE_MANAGER_EMAIL = (
+    os.environ.get("SERVICE_MANAGER_EMAIL")
+    or os.environ.get("ADMIN_EMAIL")
+    or "tom05012013@gmail.com"
+).lower()
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-change-me")
 BANKING_SECRET_KEY = os.environ.get("BANKING_SECRET_KEY", SECRET_KEY)
 FORCE_TLS = env_bool("FORCE_TLS", True)
@@ -175,10 +183,10 @@ PRODUCT_BACKUPS = int(os.environ.get("PRODUCT_BACKUPS", "3"))
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
-# Identity Toolkit (server-only password auth for end-users)
-FIREBASE_WEB_API_KEY = os.environ.get("FIREBASE_WEB_API_KEY", "").strip()
-SESSION_COOKIE_NAME = "fb_session"
+# Local session/token configuration for shopper accounts
+SESSION_COOKIE_NAME = "vendly_session"
 SESSION_MAX_DAYS = int(os.environ.get("SESSION_MAX_DAYS", "5"))
+SESSION_SERIALIZER = URLSafeTimedSerializer(SECRET_KEY, salt="vendly-user-session")
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -294,6 +302,18 @@ class AccountModel(BaseModel):
     name: str = ""
 
 
+class AccountCreateModel(AccountModel):
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def normalise_password(cls, value):
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+
 class ProductUpdateModel(BaseModel):
     name: Optional[str] = Field(None, min_length=1)
     price: Optional[float] = Field(None, ge=0)
@@ -302,7 +322,15 @@ class ProductUpdateModel(BaseModel):
 class AccountUpdateModel(BaseModel):
     email: Optional[EmailStr] = None
     name: Optional[str] = None
-    disabled: Optional[bool] = None
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def normalise_optional_password(cls, value):
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
 
 
 class AddressModel(BaseModel):
@@ -359,13 +387,15 @@ class BankingModel(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Local JSON helpers (PRODUCTS ONLY)
+# Local JSON helpers (products + shopper accounts)
 # ---------------------------------------------------------------------------
 PRODUCT_FILE = BASE_DIR / "products.json"
 PROFILE_FILE = BASE_DIR / "accounts.json"
+AUTH_FILE = BASE_DIR / "auth.json"
 BANKING_FILE = BASE_DIR / "banking.enc"
 
 PROFILE_STORE = JsonStore(PROFILE_FILE, backups=PRODUCT_BACKUPS)
+AUTH_STORE = JsonStore(AUTH_FILE, backups=PRODUCT_BACKUPS)
 BANKING_STORE = EncryptedJsonStore(BANKING_FILE, BANKING_SECRET_KEY, backups=PRODUCT_BACKUPS)
 
 
@@ -509,6 +539,64 @@ def save_profile(uid: str, profile: AccountProfileModel, *, email_override: str 
     return load_profile(uid, payload.get("email"))
 
 
+def _normalise_email(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _list_local_accounts() -> dict[str, dict]:
+    return AUTH_STORE.all()
+
+
+def _find_account_by_email(email: str) -> tuple[str | None, dict | None]:
+    target = _normalise_email(email)
+    if not target:
+        return (None, None)
+    for uid, record in _list_local_accounts().items():
+        if _normalise_email(record.get("email")) == target:
+            return (uid, record)
+    return (None, None)
+
+
+def _load_account(uid: str) -> dict | None:
+    return _list_local_accounts().get(uid)
+
+
+def _store_account(uid: str, payload: dict) -> dict:
+    payload = {**payload, "email": _normalise_email(payload.get("email"))}
+    AUTH_STORE.put(uid, payload)
+    return payload
+
+
+def _ensure_profile(uid: str, email: str | None = None, name: str | None = None) -> None:
+    existing = PROFILE_STORE.get(uid)
+    if existing:
+        return
+    PROFILE_STORE.put(
+        uid,
+        {
+            "email": _normalise_email(email),
+            "name": name or "",
+            "phone": "",
+            "address": _blank_address(),
+        },
+    )
+
+
+def _account_response(uid: str, record: dict) -> dict:
+    return {
+        "id": uid,
+        "email": record.get("email", ""),
+        "name": record.get("name", ""),
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+    }
+
+
+def _generate_password(length: int = 12) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
 def detect_card_brand(card_number: str) -> str:
     digits = re.sub(r"\D", "", card_number or "")
     if digits.startswith("4"):
@@ -561,11 +649,17 @@ def banking_summary(record: dict | None, *, reveal: bool = False) -> dict:
 def current_user_email() -> str | None:
     user = session.get("user") or {}
     email = user.get("email")
-    return email.lower() if isinstance(email, str) else None
+    return _normalise_email(email) if isinstance(email, str) else None
+
+
+def is_service_manager() -> bool:
+    return bool(session.get("is_service_manager")) or (
+        current_user_email() == SERVICE_MANAGER_EMAIL
+    )
 
 
 def is_admin() -> bool:
-    return current_user_email() == ADMIN_EMAIL
+    return bool(session.get("is_admin"))
 
 
 def admin_required(fn):
@@ -593,24 +687,73 @@ def user_required(fn):
     return wrapper
 
 
-# ---------------------------------------------------------------------------
-# End-user session helpers (Firebase session cookie)
-# ---------------------------------------------------------------------------
+def _admin_flags_for_email(email: str) -> tuple[bool, bool]:
+    normalised = _normalise_email(email)
+    is_service = normalised == SERVICE_MANAGER_EMAIL
+    is_admin_flag = False
+    if FIREBASE_READY and normalised:
+        try:
+            user = fb_auth.get_user_by_email(normalised)
+            claims = user.custom_claims or {}
+            is_admin_flag = bool(claims.get("is_admin"))
+        except fb_auth.UserNotFoundError:
+            is_admin_flag = False
+        except Exception:
+            is_admin_flag = False
+    return is_admin_flag, is_service
 
 
-def _gitkit_url(method: str) -> str:
-    return f"https://identitytoolkit.googleapis.com/v1/accounts:{method}?key={FIREBASE_WEB_API_KEY}"
+def grant_admin_via_firebase(email: str) -> dict:
+    if not FIREBASE_READY:
+        raise RuntimeError("Firebase Admin not configured")
+    normalised = _normalise_email(email)
+    if not normalised:
+        raise ValueError("Email required")
+    try:
+        user = fb_auth.get_user_by_email(normalised)
+    except fb_auth.UserNotFoundError:
+        user = fb_auth.create_user(email=normalised)
+    claims = user.custom_claims or {}
+    if not claims.get("is_admin"):
+        claims["is_admin"] = True
+        fb_auth.set_custom_user_claims(user.uid, claims)
+    return {"uid": user.uid, "email": normalised}
 
 
-def _set_session_cookie(resp, id_token: str):
+def _list_firebase_admins() -> list[dict]:
+    if not FIREBASE_READY:
+        return []
+    admins: list[dict] = []
+    try:
+        for user in fb_auth.list_users().iterate_all():
+            claims = user.custom_claims or {}
+            if claims.get("is_admin"):
+                admins.append(
+                    {
+                        "uid": user.uid,
+                        "email": _normalise_email(user.email or ""),
+                        "name": user.display_name or "",
+                    }
+                )
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+    return admins
+
+
+def _set_session_cookie(resp, uid: str, email: str):
     expires_in = datetime.timedelta(days=SESSION_MAX_DAYS)
-    session_cookie = fb_auth.create_session_cookie(id_token, expires_in=expires_in)
+    payload = {
+        "uid": uid,
+        "email": _normalise_email(email),
+        "issued_at": datetime.datetime.now(datetime.UTC).timestamp(),
+    }
+    token = SESSION_SERIALIZER.dumps(payload)
     resp.set_cookie(
         SESSION_COOKIE_NAME,
-        session_cookie,
+        token,
         max_age=int(expires_in.total_seconds()),
         httponly=True,
-        secure=True,
+        secure=FORCE_TLS,
         samesite="Lax",
     )
 
@@ -624,13 +767,19 @@ def current_user_from_cookie():
     if not cookie:
         return None
     try:
-        decoded = fb_auth.verify_session_cookie(cookie, check_revoked=True)
-        return {
-            "uid": decoded.get("uid"),
-            "email": (decoded.get("email") or "").lower(),
-        }
-    except Exception:
+        decoded = SESSION_SERIALIZER.loads(
+            cookie, max_age=SESSION_MAX_DAYS * 24 * 60 * 60
+        )
+    except (BadSignature, SignatureExpired):
         return None
+    uid = decoded.get("uid")
+    email = decoded.get("email")
+    if not uid:
+        return None
+    account = _load_account(uid)
+    if not account:
+        return None
+    return {"uid": uid, "email": account.get("email") or _normalise_email(email)}
 
 
 # ---------------------------------------------------------------------------
@@ -667,14 +816,101 @@ def auth_callback():
         resp = oauth.google.get(userinfo_url)
         info = resp.json() if resp else {}
 
-    email = (info.get("email") or "").lower()
+    email = _normalise_email(info.get("email"))
     session["user"] = {
         "email": email,
         "name": info.get("name") or "",
         "sub": info.get("sub") or "",
     }
-    session["is_admin"] = email == ADMIN_EMAIL
+    is_admin_flag, is_service = _admin_flags_for_email(email)
+    session["is_admin"] = is_admin_flag
+    session["is_service_manager"] = is_service
+    if not is_admin_flag and not is_service:
+        session["login_error"] = (
+            "This Google account is not authorised for the admin dashboard. "
+            "Ask the service manager to grant access."
+        )
+        session.pop("user", None)
+        session.pop("is_admin", None)
+        session.pop("is_service_manager", None)
     return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/setup")
+def admin_setup():
+    if not is_service_manager():
+        return redirect(url_for("admin_dashboard"))
+    admins: list[dict] = []
+    error = None
+    try:
+        admins = _list_firebase_admins()
+    except RuntimeError as exc:
+        error = str(exc)
+    return render_template(
+        "setup.html",
+        service_manager_email=SERVICE_MANAGER_EMAIL,
+        admins=admins,
+        firebase_ready=FIREBASE_READY,
+        error=error,
+    )
+
+
+@app.route("/admin/setup/begin")
+def admin_setup_begin():
+    if not is_service_manager():
+        return redirect(url_for("admin_dashboard"))
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return "Google OAuth not configured", 503
+    redirect_uri = url_for("admin_setup_callback", _external=True, _scheme="https")
+    return oauth.google.authorize_redirect(
+        redirect_uri, prompt="select_account", access_type="offline"
+    )
+
+
+@app.route("/admin/setup/callback")
+def admin_setup_callback():
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return "Google OAuth not configured", 503
+    if not is_service_manager():
+        session.clear()
+        return redirect(url_for("admin_dashboard"))
+
+    token = oauth.google.authorize_access_token()
+    info = None
+    try:
+        info = oauth.google.parse_id_token(token)
+    except Exception:
+        info = None
+    if not info:
+        userinfo_url = (
+            oauth.google.server_metadata.get("userinfo_endpoint")
+            or "https://openidconnect.googleapis.com/v1/userinfo"
+        )
+        resp = oauth.google.get(userinfo_url)
+        info = resp.json() if resp else {}
+
+    email = _normalise_email(info.get("email"))
+    success = False
+    error = None
+    if not email:
+        error = "Google did not return an email address."
+    elif not FIREBASE_READY:
+        error = "Firebase Admin SDK is not configured."
+    else:
+        try:
+            grant_admin_via_firebase(email)
+            success = True
+        except Exception as exc:
+            error = str(exc)
+
+    session.clear()
+    return render_template(
+        "setup_result.html",
+        success=success,
+        created_email=email,
+        error=error,
+        service_manager_email=SERVICE_MANAGER_EMAIL,
+    )
 
 
 @app.route("/logout")
@@ -688,48 +924,49 @@ def logout():
 # ---------------------------------------------------------------------------
 @app.route("/auth/register", methods=["POST"])
 def auth_register():
-    if not FIREBASE_READY:
-        return jsonify({"error": "Firebase Admin not configured"}), 503
     try:
         payload = request.get_json(force=True) or {}
-        email = (payload.get("email") or "").strip()
-        password = payload.get("password") or ""
-        name = (payload.get("name") or "").strip()
-        if not email or not password or len(password) < 8:
-            return jsonify({"error": "Email and password (>=8 chars) required"}), 400
-        user = fb_auth.create_user(
-            email=email, password=password, display_name=name or None
-        )
-        return jsonify({"id": user.uid}), 201
+        registration = AccountCreateModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+    existing_uid, _ = _find_account_by_email(registration.email)
+    if existing_uid:
+        return jsonify({"error": "Email already exists"}), 409
+    uid = str(uuid4())
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+    password = registration.password or _generate_password()
+    stored = {
+        "email": registration.email,
+        "name": registration.name or "",
+        "password_hash": generate_password_hash(password),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    _store_account(uid, stored)
+    _ensure_profile(uid, registration.email, registration.name)
+    try:
+        resp = make_response(jsonify({"id": uid, "password": password}))
+        _set_session_cookie(resp, uid, registration.email)
+        return resp, 201
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
-    if not FIREBASE_READY or not FIREBASE_WEB_API_KEY:
-        return jsonify({"error": "Auth not configured"}), 503
     try:
         payload = request.get_json(force=True) or {}
         email = (payload.get("email") or "").strip()
         password = payload.get("password") or ""
         if not email or not password:
             return jsonify({"error": "Email and password are required"}), 400
-        r = requests.post(
-            _gitkit_url("signInWithPassword"),
-            json={
-                "email": email,
-                "password": password,
-                "returnSecureToken": True,
-            },
-            timeout=10,
-        )
-        if r.status_code != 200:
-            msg = r.json().get("error", {}).get("message", "INVALID_LOGIN")
-            return jsonify({"error": f"Login failed: {msg}"}), 401
-        id_token = r.json()["idToken"]
+        uid, record = _find_account_by_email(email)
+        if not uid or not record:
+            return jsonify({"error": "Invalid credentials"}), 401
+        if not check_password_hash(record.get("password_hash", ""), password):
+            return jsonify({"error": "Invalid credentials"}), 401
         resp = make_response(jsonify({"ok": True}))
-        _set_session_cookie(resp, id_token)
+        _set_session_cookie(resp, uid, record.get("email") or email)
         return resp
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -843,123 +1080,101 @@ def delete_product(product_id):
 @app.route("/accounts", methods=["GET"])
 @admin_required
 def get_accounts():
-    if not FIREBASE_READY:
-        return jsonify({"error": "Firebase Admin not configured"}), 503
-    users = []
     try:
-        for u in fb_auth.list_users().iterate_all():
-            users.append(
-                {
-                    "id": u.uid,
-                    "email": u.email,
-                    "name": u.display_name or "",
-                    "disabled": bool(u.disabled),
-                    "email_verified": bool(u.email_verified),
-                }
-            )
+        payload = [
+            _account_response(uid, record)
+            for uid, record in _list_local_accounts().items()
+        ]
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    return jsonify(users)
+    return jsonify(payload)
 
 
 @app.route("/accounts/<uid>", methods=["GET"])
 @admin_required
 def get_account(uid):
-    if not FIREBASE_READY:
-        return jsonify({"error": "Firebase Admin not configured"}), 503
-    try:
-        u = fb_auth.get_user(uid)
-        return jsonify(
-            {
-                "id": u.uid,
-                "email": u.email,
-                "name": u.display_name or "",
-                "disabled": bool(u.disabled),
-                "email_verified": bool(u.email_verified),
-            }
-        )
-    except fb_auth.UserNotFoundError:
+    record = _load_account(uid)
+    if not record:
         return jsonify({"error": "Not found"}), 404
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    return jsonify(_account_response(uid, record))
 
 
 @app.route("/accounts", methods=["POST"])
 @admin_required
 def create_account():
-    if not FIREBASE_READY:
-        return jsonify({"error": "Firebase Admin not configured"}), 503
     try:
         payload = request.get_json(force=True) or {}
-        account = AccountModel(**payload)
+        account = AccountCreateModel(**payload)
     except ValidationError as err:
         return jsonify({"error": err.errors()}), 400
-    try:
-        user = fb_auth.create_user(
-            email=account.email, display_name=account.name or None
-        )
-        return jsonify({"id": user.uid}), 201
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    existing_uid, _ = _find_account_by_email(account.email)
+    if existing_uid:
+        return jsonify({"error": "Email already exists"}), 409
+    password = account.password or _generate_password()
+    uid = str(uuid4())
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+    stored = {
+        "email": account.email,
+        "name": account.name or "",
+        "password_hash": generate_password_hash(password),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    _store_account(uid, stored)
+    _ensure_profile(uid, account.email, account.name)
+    return jsonify({"id": uid, "password": password}), 201
 
 
 @app.route("/accounts/<uid>", methods=["PUT"])
 @admin_required
 def update_account(uid):
-    if not FIREBASE_READY:
-        return jsonify({"error": "Firebase Admin not configured"}), 503
+    record = _load_account(uid)
+    if not record:
+        return jsonify({"error": "Not found"}), 404
     try:
         payload = request.get_json(force=True) or {}
-        account = AccountUpdateModel(**payload)
+        updates = AccountUpdateModel(**payload)
     except ValidationError as err:
         return jsonify({"error": err.errors()}), 400
-    try:
-        fb_auth.update_user(
-            uid,
-            email=account.email,
-            display_name=account.name,
-            disabled=account.disabled,
-        )
-        updated = fb_auth.get_user(uid)
-        return jsonify(
-            {
-                "id": updated.uid,
-                "email": updated.email,
-                "name": updated.display_name or "",
-                "disabled": bool(updated.disabled),
-                "email_verified": bool(updated.email_verified),
-            }
-        )
-    except fb_auth.UserNotFoundError:
-        return jsonify({"error": "Not found"}), 404
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    new_record = dict(record)
+    changed_password = None
+    if updates.email:
+        new_email = _normalise_email(updates.email)
+        existing_uid, _ = _find_account_by_email(new_email)
+        if existing_uid and existing_uid != uid:
+            return jsonify({"error": "Email already exists"}), 409
+        new_record["email"] = new_email
+    if updates.name is not None:
+        new_record["name"] = updates.name
+    if updates.password:
+        changed_password = updates.password
+        new_record["password_hash"] = generate_password_hash(updates.password)
+    new_record["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+    _store_account(uid, new_record)
+    _ensure_profile(uid, new_record.get("email"), new_record.get("name"))
+    response = _account_response(uid, new_record)
+    if changed_password:
+        response["password"] = changed_password
+    return jsonify(response)
 
 
 @app.route("/accounts/<uid>", methods=["DELETE"])
 @admin_required
 def delete_account(uid):
-    if not FIREBASE_READY:
-        return jsonify({"error": "Firebase Admin not configured"}), 503
-    try:
-        fb_auth.delete_user(uid)
-        return jsonify({"ok": True})
-    except fb_auth.UserNotFoundError:
+    record = _load_account(uid)
+    if not record:
         return jsonify({"error": "Not found"}), 404
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    AUTH_STORE.remove(uid)
+    PROFILE_STORE.remove(uid)
+    BANKING_STORE.remove(uid)
+    return jsonify({"ok": True})
 
 
 @app.route("/accounts/<uid>/profile", methods=["GET", "PUT"])
 @admin_required
 def admin_account_profile(uid):
-    email_hint = None
-    if FIREBASE_READY:
-        try:
-            fb_user = fb_auth.get_user(uid)
-            email_hint = (fb_user.email or "").lower()
-        except Exception:
-            email_hint = None
+    account = _load_account(uid)
+    email_hint = account.get("email") if account else None
     if request.method == "GET":
         return jsonify(load_profile(uid, email_hint))
     try:
@@ -1004,10 +1219,16 @@ def root():
 def admin_dashboard():
     products = list_products_local()
     accounts = []
-    if is_admin() and FIREBASE_READY:
+    if is_admin():
         try:
-            for u in fb_auth.list_users().iterate_all():
-                accounts.append({"email": u.email, "name": u.display_name or ""})
+            for uid, record in _list_local_accounts().items():
+                accounts.append(
+                    {
+                        "id": uid,
+                        "email": record.get("email", ""),
+                        "name": record.get("name", ""),
+                    }
+                )
         except Exception as exc:
             print(f"Failed to preload accounts: {exc}")
     api_base = PUBLIC_BASE_URL or request.url_root.rstrip("/")
@@ -1017,13 +1238,16 @@ def admin_dashboard():
         api_base = f"{scheme}://{host}".rstrip("/")
     if not api_base.startswith("http"):
         api_base = ("https" if FORCE_TLS else "http") + "://" + request.host
+    login_error = session.pop("login_error", None)
     return render_template(
         "index.html",
         products=products,
         accounts=accounts,
         is_admin=is_admin(),
+        is_service_manager=is_service_manager(),
         user_email=current_user_email(),
-        ADMIN_EMAIL=ADMIN_EMAIL,
+        service_manager_email=SERVICE_MANAGER_EMAIL,
+        login_error=login_error,
         api_base=api_base,
     )
 

@@ -23,7 +23,7 @@ def test_create_product_recovers_from_corrupt_store(configure_test_env):
 
     client = flask_app.app.test_client()
     with client.session_transaction() as session:
-        session["user"] = {"email": flask_app.ADMIN_EMAIL}
+        session["user"] = {"email": "admin@example.com"}
         session["is_admin"] = True
 
     response = client.post(
@@ -53,7 +53,7 @@ def test_products_endpoint_falls_back_to_backup(configure_test_env):
     product_file = configure_test_env
     client = flask_app.app.test_client()
     with client.session_transaction() as session:
-        session["user"] = {"email": flask_app.ADMIN_EMAIL}
+        session["user"] = {"email": "admin@example.com"}
         session["is_admin"] = True
 
     first = client.post(

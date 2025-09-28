@@ -72,11 +72,28 @@ def test_me_banking_encrypted(monkeypatch):
 def admin_client(monkeypatch):
     client = flask_app.app.test_client()
     monkeypatch.setattr(flask_app, "is_admin", lambda: True)
-    monkeypatch.setattr(flask_app, "current_user_email", lambda: flask_app.ADMIN_EMAIL)
+    monkeypatch.setattr(flask_app, "current_user_email", lambda: "admin@example.com")
+    monkeypatch.setattr(flask_app, "is_service_manager", lambda: False)
     with client.session_transaction() as session:
-        session["user"] = {"email": flask_app.ADMIN_EMAIL}
+        session["user"] = {"email": "admin@example.com"}
         session["is_admin"] = True
     return client
+
+
+def test_admin_create_account(monkeypatch):
+    client = admin_client(monkeypatch)
+    response = client.post(
+        "/accounts",
+        json={"email": "new.user@example.com", "name": "New User"},
+        base_url="https://localhost",
+    )
+    assert response.status_code == 201
+    data = response.get_json()
+    assert data["id"]
+    assert data["password"]
+    stored = flask_app.AUTH_STORE.get(data["id"])
+    assert stored["email"] == "new.user@example.com"
+    assert stored["password_hash"] != data["password"]
 
 
 def test_admin_profile_round_trip(monkeypatch):
