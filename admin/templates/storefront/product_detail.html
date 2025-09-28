@@ -1,0 +1,114 @@
+{% extends 'layout.html' %}
+{% block title %}{{ product.name }} · {{ site_settings.brand }}{% endblock %}
+{% block content %}
+  <section class="product-detail">
+    <div class="row g-4 align-items-start">
+      <div class="col-lg-5">
+        <div class="product-detail__media card shadow-sm">
+          {% if product.image %}
+            <img src="{{ product.image }}" class="img-fluid rounded" alt="{{ product.name }} image">
+          {% else %}
+            <div class="product-detail__placeholder d-flex flex-column justify-content-center align-items-center text-muted">
+              <i class="bi bi-box-seam display-5"></i>
+              <span class="mt-2">Imagery coming soon</span>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="col-lg-7">
+        <header class="mb-4">
+          <span class="badge bg-primary-subtle text-light text-uppercase small">Featured</span>
+          <h1 class="h3 mt-3 mb-2">{{ product.name }}</h1>
+          <p class="text-secondary">{{ product.description or 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla facilisi. Phasellus viverra faucibus lorem.' }}</p>
+          <div class="d-flex align-items-center gap-3 mt-3">
+            <span class="h4 mb-0 text-white">${{ '%.2f'|format(product.price) }}</span>
+            {% if review_meta.average %}
+              <div class="text-warning small d-flex align-items-center gap-1">
+                <i class="bi bi-star-fill"></i>
+                <span>{{ review_meta.average }} / 5 · {{ review_meta.count }} review{{ 's' if review_meta.count != 1 else '' }}</span>
+              </div>
+            {% endif %}
+          </div>
+        </header>
+        <div class="d-flex flex-wrap gap-3">
+          <form method="post" action="{{ url_for('cart_add', product_id=product.id) }}">
+            <input type="hidden" name="quantity" value="1">
+            <button class="btn btn-primary" type="submit">
+              <i class="bi bi-bag-plus"></i>
+              Add to cart
+            </button>
+          </form>
+          <a class="btn btn-outline-light" href="{{ url_for('storefront_home') }}#products">Back to catalog</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt-5" id="reviews">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="h5 mb-0">Customer feedback</h2>
+      <span class="badge bg-secondary">{{ review_meta.count }} review{{ 's' if review_meta.count != 1 else '' }}</span>
+    </div>
+    {% if current_user %}
+      <div class="card text-bg-dark border border-secondary mb-4">
+        <div class="card-body">
+          <h3 class="h6">Share your thoughts</h3>
+          <form method="post" action="{{ url_for('product_review_submit', product_id=product.id) }}">
+            <div class="row g-3 align-items-center">
+              <div class="col-md-3">
+                <label class="form-label" for="rating">Rating</label>
+                <select class="form-select" id="rating" name="rating">
+                  {% for score in [5, 4, 3, 2, 1] %}
+                    <option value="{{ score }}">{{ score }} ★</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-9">
+                <label class="form-label" for="comment">Comment</label>
+                <textarea id="comment" name="comment" class="form-control" rows="3" maxlength="1000" placeholder="Lorem ipsum dolor sit amet, consectetur adipiscing elit."></textarea>
+              </div>
+            </div>
+            <div class="mt-3 d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Submit review</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    {% else %}
+      <div class="alert alert-info">
+        <div class="d-flex flex-column flex-md-row align-items-md-center gap-3">
+          <div>
+            Sign in to leave a rating and let other shoppers know how this product worked for you.
+          </div>
+          <a class="btn btn-outline-primary" href="{{ url_for('auth_login', next=request.path) }}">Sign in to review</a>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if reviews %}
+      <div class="list-group">
+        {% for review in reviews|reverse %}
+          <article class="list-group-item bg-dark text-light border-secondary">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <div class="fw-semibold">{{ review.author.name }}</div>
+                <div class="text-warning small mb-2">
+                  <i class="bi bi-star-fill"></i>
+                  {{ review.rating }} / 5
+                </div>
+                <p class="mb-1">{{ review.comment }}</p>
+                <small class="text-secondary">Posted {{ review.created_at|replace('T', ' ') }}</small>
+              </div>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="card text-bg-dark border border-secondary">
+        <div class="card-body text-center text-secondary">
+          No reviews yet — be the first to share a few words after checkout.
+        </div>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}
