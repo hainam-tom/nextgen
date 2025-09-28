@@ -1,0 +1,69 @@
+{% extends 'layout.html' %}
+{% block title %}Admin dashboard{% endblock %}
+{% block content %}
+  <h1 class="h3 mb-4">Admin dashboard</h1>
+  {% if not session.get('is_admin') and not session.get('is_service_manager') %}
+    <div class="card text-bg-dark border border-secondary">
+      <div class="card-body">
+        <h2 class="h5">Restricted area</h2>
+        <p class="text-secondary mb-0">You must sign in with an authorised Google account to manage inventory. Use the button below to continue.</p>
+        <a class="btn btn-primary mt-3" href="{{ url_for('login') }}">Sign in with Google</a>
+      </div>
+    </div>
+  {% else %}
+    <div class="row g-4">
+      <div class="col-lg-6">
+        <div class="card text-bg-dark border border-secondary h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Create product</h2>
+            <form method="post" action="{{ url_for('admin_create_product') }}">
+              <div class="mb-3">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" class="form-control" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-control" rows="3"></textarea>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Price</label>
+                <input type="number" step="0.01" name="price" class="form-control" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Image URL</label>
+                <input type="url" name="image" class="form-control">
+              </div>
+              <button type="submit" class="btn btn-primary">Add product</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="card text-bg-dark border border-secondary h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Existing products</h2>
+            {% if products %}
+              <div class="list-group">
+                {% for product in products %}
+                  <div class="list-group-item bg-dark text-light">
+                    <div class="d-flex justify-content-between align-items-start">
+                      <div>
+                        <div class="fw-semibold">{{ product.name }}</div>
+                        <div class="text-secondary small">${{ '%.2f'|format(product.price) }}</div>
+                      </div>
+                      <form method="post" action="{{ url_for('admin_delete_product', product_id=product.id) }}">
+                        <button type="submit" class="btn btn-outline-light btn-sm">Delete</button>
+                      </form>
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="alert alert-info mb-0">No products in the catalog.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

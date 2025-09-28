@@ -7,9 +7,9 @@
 - Shared persistence/origin helpers live in `commonlib/` and are consumed by both the backend and browser clients to avoid duplication.
 
 ## Frontend
-- Storefront lives under `user/` and loads products from the API.
-- Shopping cart uses a DataTable for sortable items.
-- Admin dashboard served from `/admin` uses Bootstrap 5 and DataTables for full CRUD.
+- The shopper experience is rendered with Flask templates in `admin/templates/storefront/`, so catalog browsing, carts, and checkout forms work without JavaScript API calls.
+- Account management posts directly back to the Flask routes, reusing the same validation models as the API to avoid divergent logic.
+- The admin dashboard at `/admin` now uses server-rendered forms under `admin/templates/admin/`, removing the previous JavaScript client and keeping inventory edits on the backend.
 
 ### Quick start
 

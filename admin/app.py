@@ -33,6 +33,7 @@ from flask import (
     session,
     make_response,
     send_from_directory,
+    flash,
 )
 from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
@@ -55,6 +56,8 @@ from commonlib.network import (
 from commonlib.storage import EncryptedJsonStore, JsonStore, StoreError
 
 BASE_DIR = Path(__file__).resolve().parent
+TEMPLATE_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
 COMMONLIB_DIR = BASE_DIR.parent / "commonlib"
 
 # ---------------------------------------------------------------------------
@@ -109,9 +112,8 @@ SESSION_SERIALIZER = URLSafeTimedSerializer(SECRET_KEY, salt="vendly-user-sessio
 # ---------------------------------------------------------------------------
 app = Flask(
     __name__,
-    template_folder=str(BASE_DIR),
-    static_folder=str(BASE_DIR),
-    static_url_path="",
+    template_folder=str(TEMPLATE_DIR),
+    static_folder=str(STATIC_DIR),
 )
 app.config.update(
     SECRET_KEY=SECRET_KEY,
@@ -124,6 +126,49 @@ app.config.update(
     PUBLIC_PORT=PUBLIC_PORT,
     LETS_ENCRYPT_EMAIL=LETS_ENCRYPT_EMAIL,
 )
+
+
+def _load_cart() -> dict[str, int]:
+    cart = session.get("cart")
+    if not isinstance(cart, dict):
+        return {}
+    cleaned: dict[str, int] = {}
+    for product_id, quantity in cart.items():
+        try:
+            qty = int(quantity)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            cleaned[str(product_id)] = qty
+    return cleaned
+
+
+def _cart_items_with_totals(cart: dict[str, int]) -> tuple[list[dict], float]:
+    items: list[dict] = []
+    total = 0.0
+    for product_id, quantity in cart.items():
+        product = get_product_local(product_id)
+        if not product:
+            continue
+        price = float(product.get("price", 0) or 0)
+        subtotal = price * quantity
+        total += subtotal
+        items.append({"product": product, "quantity": quantity, "total": subtotal})
+    return items, total
+
+
+def _wants_json_response() -> bool:
+    if request.is_json:
+        return True
+    accept = request.accept_mimetypes
+    return accept and accept.best == "application/json"
+
+
+@app.context_processor
+def inject_template_globals():
+    user = current_user_from_cookie()
+    cart = _load_cart()
+    return {"current_user": user, "cart_count": sum(cart.values())}
 
 
 @app.route("/commonlib/<path:filename>")
@@ -218,6 +263,8 @@ except Exception as exc:  # optional
 class ProductModel(BaseModel):
     name: str = Field(..., min_length=1)
     price: float = Field(..., ge=0)
+    description: str = ""
+    image: Optional[str] = None
 
 
 class AccountModel(BaseModel):
@@ -240,6 +287,8 @@ class AccountCreateModel(AccountModel):
 class ProductUpdateModel(BaseModel):
     name: Optional[str] = Field(None, min_length=1)
     price: Optional[float] = Field(None, ge=0)
+    description: Optional[str] = None
+    image: Optional[str] = None
 
 
 class AccountUpdateModel(BaseModel):
@@ -770,7 +819,7 @@ def admin_setup():
     except RuntimeError as exc:
         error = str(exc)
     return render_template(
-        "setup.html",
+        "admin/setup.html",
         service_manager_email=SERVICE_MANAGER_EMAIL,
         admins=admins,
         firebase_ready=FIREBASE_READY,
@@ -828,7 +877,7 @@ def admin_setup_callback():
 
     session.clear()
     return render_template(
-        "setup_result.html",
+        "admin/setup_result.html",
         success=success,
         created_email=email,
         error=error,
@@ -845,16 +894,31 @@ def logout():
 # ---------------------------------------------------------------------------
 # End-user auth routes (password login via server)
 # ---------------------------------------------------------------------------
-@app.route("/auth/register", methods=["POST"])
+@app.route("/auth/register", methods=["GET", "POST"])
 def auth_register():
+    if request.method == "GET":
+        return render_template("storefront/register.html")
+
+    json_request = request.is_json
     try:
-        payload = request.get_json(force=True) or {}
+        if json_request:
+            payload = request.get_json(force=True) or {}
+        else:
+            payload = {k: v for k, v in request.form.items()}
         registration = AccountCreateModel(**payload)
     except ValidationError as err:
-        return jsonify({"error": err.errors()}), 400
+        if json_request:
+            return jsonify({"error": err.errors()}), 400
+        flash("; ".join(e["msg"] for e in err.errors()), "danger")
+        return redirect(url_for("auth_register"))
+
     existing_uid, _ = _find_account_by_email(registration.email)
     if existing_uid:
-        return jsonify({"error": "Email already exists"}), 409
+        if json_request:
+            return jsonify({"error": "Email already exists"}), 409
+        flash("Email already exists", "danger")
+        return redirect(url_for("auth_register"))
+
     uid = str(uuid4())
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
     password = registration.password or _generate_password()
@@ -867,38 +931,75 @@ def auth_register():
     }
     _store_account(uid, stored)
     _ensure_profile(uid, registration.email, registration.name)
+
     try:
-        resp = make_response(jsonify({"id": uid, "password": password}))
+        if json_request:
+            resp = make_response(jsonify({"id": uid, "password": password}))
+        else:
+            message = "Account created successfully."
+            if not registration.password:
+                message += f" Temporary password: {password}"
+            flash(message, "success")
+            resp = make_response(redirect(url_for("account_settings")))
         _set_session_cookie(resp, uid, registration.email)
-        return resp, 201
+        if json_request:
+            return resp, 201
+        return resp
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        if json_request:
+            return jsonify({"error": str(exc)}), 500
+        flash(f"Failed to create account: {exc}", "danger")
+        return redirect(url_for("auth_register"))
 
 
-@app.route("/auth/login", methods=["POST"])
+@app.route("/auth/login", methods=["GET", "POST"])
 def auth_login():
+    if request.method == "GET":
+        return render_template("storefront/login.html")
+
+    json_request = request.is_json
     try:
-        payload = request.get_json(force=True) or {}
+        if json_request:
+            payload = request.get_json(force=True) or {}
+        else:
+            payload = {k: v for k, v in request.form.items()}
         email = (payload.get("email") or "").strip()
         password = payload.get("password") or ""
         if not email or not password:
-            return jsonify({"error": "Email and password are required"}), 400
+            if json_request:
+                return jsonify({"error": "Email and password are required"}), 400
+            flash("Email and password are required", "danger")
+            return redirect(url_for("auth_login"))
         uid, record = _find_account_by_email(email)
-        if not uid or not record:
-            return jsonify({"error": "Invalid credentials"}), 401
-        if not check_password_hash(record.get("password_hash", ""), password):
-            return jsonify({"error": "Invalid credentials"}), 401
-        resp = make_response(jsonify({"ok": True}))
+        if not uid or not record or not check_password_hash(record.get("password_hash", ""), password):
+            if json_request:
+                return jsonify({"error": "Invalid credentials"}), 401
+            flash("Invalid credentials", "danger")
+            return redirect(url_for("auth_login"))
+        if json_request:
+            resp = make_response(jsonify({"ok": True}))
+        else:
+            flash("Signed in successfully", "success")
+            resp = make_response(redirect(url_for("storefront_home")))
         _set_session_cookie(resp, uid, record.get("email") or email)
         return resp
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        if json_request:
+            return jsonify({"error": str(exc)}), 500
+        flash(f"Login failed: {exc}", "danger")
+        return redirect(url_for("auth_login"))
 
 
-@app.route("/auth/logout", methods=["POST"])
+@app.route("/auth/logout", methods=["POST", "GET"])
 def auth_logout():
-    resp = make_response(jsonify({"ok": True}))
+    json_request = _wants_json_response()
+    if json_request:
+        resp = make_response(jsonify({"ok": True}))
+    else:
+        flash("Signed out", "success")
+        resp = make_response(redirect(url_for("storefront_home")))
     _clear_session_cookie(resp)
+    session.pop("cart", None)
     return resp
 
 
@@ -1131,48 +1232,205 @@ def admin_account_banking(uid):
 
 
 # ---------------------------------------------------------------------------
-# Admin dashboard (SSR). Accounts only shown to admin session.
+# Storefront views (server-rendered to avoid client-side duplication).
 # ---------------------------------------------------------------------------
 @app.route("/")
-def root():
-    return redirect(url_for("admin_dashboard"))
+def storefront_home():
+    products = list_products_local()
+    cart = _load_cart()
+    return render_template(
+        "storefront/home.html",
+        products=products,
+        cart_count=sum(cart.values()),
+    )
 
 
+@app.route("/cart")
+def storefront_cart():
+    cart = _load_cart()
+    items, total = _cart_items_with_totals(cart)
+    return render_template("storefront/cart.html", items=items, total=total)
+
+
+@app.route("/cart/add/<product_id>", methods=["POST"])
+def cart_add(product_id: str):
+    product = get_product_local(product_id)
+    if not product:
+        flash("Product not found", "danger")
+        return redirect(url_for("storefront_home"))
+    try:
+        quantity = int(request.form.get("quantity", "1"))
+    except ValueError:
+        quantity = 1
+    quantity = max(1, quantity)
+    cart = _load_cart()
+    cart[product_id] = cart.get(product_id, 0) + quantity
+    session["cart"] = cart
+    session.modified = True
+    flash(f"Added {product.get('name', 'item')} to cart", "success")
+    return redirect(request.referrer or url_for("storefront_home"))
+
+
+@app.route("/cart/update", methods=["POST"])
+def cart_update():
+    cart: dict[str, int] = {}
+    for key, value in request.form.items():
+        if not key.startswith("quantity_"):
+            continue
+        product_id = key[len("quantity_"):]
+        try:
+            qty = int(value)
+        except ValueError:
+            continue
+        if qty > 0 and get_product_local(product_id):
+            cart[product_id] = qty
+    session["cart"] = cart
+    session.modified = True
+    flash("Cart updated", "success")
+    return redirect(url_for("storefront_cart"))
+
+
+@app.route("/cart/clear", methods=["POST"])
+def cart_clear():
+    session.pop("cart", None)
+    session.modified = True
+    flash("Cart cleared", "info")
+    return redirect(url_for("storefront_cart"))
+
+
+@app.route("/account")
+def account_settings():
+    user = current_user_from_cookie()
+    if not user:
+        flash("Please sign in to manage your account", "warning")
+        return redirect(url_for("auth_login"))
+    profile = load_profile(user["uid"], user.get("email"))
+    try:
+        raw_banking = BANKING_STORE.get(user["uid"], {})
+    except StoreError as exc:
+        flash(f"Unable to load payment details: {exc}", "danger")
+        raw_banking = {}
+    summary = banking_summary(raw_banking)
+    summary_display = {
+        "cardholder": summary.get("cardholder", ""),
+        "card_number": "",
+        "exp_month": summary.get("exp_month"),
+        "exp_year": summary.get("exp_year"),
+        "cvc": "",
+        "postal_code": summary.get("billing_postal", ""),
+    }
+    return render_template(
+        "storefront/account.html",
+        profile=profile,
+        banking=summary_display,
+    )
+
+
+@app.route("/account/profile", methods=["POST"])
+def account_profile():
+    user = current_user_from_cookie()
+    if not user:
+        flash("Please sign in to update your profile", "warning")
+        return redirect(url_for("auth_login"))
+    address_payload = {
+        "line1": request.form.get("line1", "").strip(),
+        "line2": request.form.get("line2", "").strip(),
+        "city": request.form.get("city", "").strip(),
+        "state": request.form.get("state", "").strip(),
+        "postal_code": request.form.get("postal_code", "").strip(),
+        "country": request.form.get("country", "").strip(),
+    }
+    payload = {
+        "email": request.form.get("email"),
+        "name": request.form.get("name", ""),
+        "phone": request.form.get("phone", ""),
+        "address": address_payload,
+    }
+    try:
+        profile_model = AccountProfileModel(**payload)
+    except ValidationError as err:
+        flash("; ".join(e["msg"] for e in err.errors()), "danger")
+        return redirect(url_for("account_settings"))
+    try:
+        save_profile(user["uid"], profile_model, email_override=request.form.get("email"))
+    except StoreError as exc:
+        flash(f"Failed to save profile: {exc}", "danger")
+        return redirect(url_for("account_settings"))
+    flash("Profile updated", "success")
+    return redirect(url_for("account_settings"))
+
+
+@app.route("/account/banking", methods=["POST"])
+def account_banking():
+    user = current_user_from_cookie()
+    if not user:
+        flash("Please sign in to update payment details", "warning")
+        return redirect(url_for("auth_login"))
+    payload = {
+        "cardholder": request.form.get("cardholder", ""),
+        "card_number": request.form.get("card_number", ""),
+        "exp_month": request.form.get("exp_month"),
+        "exp_year": request.form.get("exp_year"),
+        "cvc": request.form.get("cvc", ""),
+        "postal_code": request.form.get("postal_code", ""),
+    }
+    try:
+        banking_model = BankingModel(**payload)
+    except ValidationError as err:
+        flash("; ".join(e["msg"] for e in err.errors()), "danger")
+        return redirect(url_for("account_settings"))
+    try:
+        save_banking(user["uid"], banking_model)
+    except StoreError as exc:
+        flash(f"Failed to save payment info: {exc}", "danger")
+        return redirect(url_for("account_settings"))
+    flash("Payment information updated", "success")
+    return redirect(url_for("account_settings"))
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard (SSR) and product helpers
+# ---------------------------------------------------------------------------
 @app.route("/admin")
 def admin_dashboard():
     products = list_products_local()
-    accounts = []
-    if is_admin():
-        try:
-            for uid, record in _list_local_accounts().items():
-                accounts.append(
-                    {
-                        "id": uid,
-                        "email": record.get("email", ""),
-                        "name": record.get("name", ""),
-                    }
-                )
-        except Exception as exc:
-            print(f"Failed to preload accounts: {exc}")
-    api_base = PUBLIC_BASE_URL or request.url_root.rstrip("/")
-    scheme = request.headers.get("X-Forwarded-Proto")
-    if not PUBLIC_BASE_URL and scheme in {"http", "https"}:
-        host = request.headers.get("X-Forwarded-Host") or request.host
-        api_base = f"{scheme}://{host}".rstrip("/")
-    if not api_base.startswith("http"):
-        api_base = ("https" if FORCE_TLS else "http") + "://" + request.host
-    login_error = session.pop("login_error", None)
-    return render_template(
-        "index.html",
-        products=products,
-        accounts=accounts,
-        is_admin=is_admin(),
-        is_service_manager=is_service_manager(),
-        user_email=current_user_email(),
-        service_manager_email=SERVICE_MANAGER_EMAIL,
-        login_error=login_error,
-        api_base=api_base,
-    )
+    return render_template("admin/dashboard.html", products=products)
+
+
+@app.route("/admin/products/create", methods=["POST"])
+def admin_create_product():
+    if not (is_admin() or is_service_manager()):
+        flash("Admin privileges required", "danger")
+        return redirect(url_for("admin_dashboard"))
+    form_data = {
+        "name": request.form.get("name", ""),
+        "price": request.form.get("price"),
+        "description": request.form.get("description", ""),
+        "image": request.form.get("image") or None,
+    }
+    try:
+        if form_data["price"] is not None:
+            form_data["price"] = float(form_data["price"])
+        product = ProductModel(**form_data)
+    except (ValidationError, ValueError) as err:
+        message = "; ".join(e["msg"] for e in err.errors()) if isinstance(err, ValidationError) else str(err)
+        flash(f"Unable to create product: {message}", "danger")
+        return redirect(url_for("admin_dashboard"))
+    append_product_local(product.model_dump())
+    flash("Product added", "success")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/products/<product_id>/delete", methods=["POST"])
+def admin_delete_product(product_id: str):
+    if not (is_admin() or is_service_manager()):
+        flash("Admin privileges required", "danger")
+        return redirect(url_for("admin_dashboard"))
+    if delete_product_local(product_id):
+        flash("Product removed", "success")
+    else:
+        flash("Product not found", "warning")
+    return redirect(url_for("admin_dashboard"))
 
 
 # ---------------------------------------------------------------------------
