@@ -20,6 +20,8 @@
 
 Each installer now guides you through selecting the API port and fallback technician host, wiring optional domains (with Cloudflare DNS and Let's Encrypt certificate automation), checking public port reachability via ifconfig.co, and writing `admin/.env` before provisioning a Python virtual environment.
 
+Populate `scripts/.env` to preseed those installers with defaults (for example `INSTALL_REPO_URL`, `LETS_ENCRYPT_EMAIL`, `PUBLIC_DOMAIN`, or Cloudflare credentials) when automating repeated deployments.
+
 ### Domain & HTTPS
 
 - Supply your domain during installation to have the scripts derive `PUBLIC_BASE_URL`, update `ALLOWED_ORIGINS`, and (optionally) request Cloudflare DNS A records via API tokens.

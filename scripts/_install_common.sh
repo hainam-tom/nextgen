@@ -3,6 +3,77 @@
 
 set -euo pipefail
 
+is_truthy() {
+  local value="${1:-}"
+  case "${value,,}" in
+    1|y|yes|true|on) return 0 ;;
+  esac
+  return 1
+}
+
+is_falsy() {
+  local value="${1:-}"
+  case "${value,,}" in
+    0|n|no|false|off) return 0 ;;
+  esac
+  return 1
+}
+
+maybe_sync_repository() {
+  local repo_root="$1"
+  local skip="${INSTALL_SKIP_SYNC:-}"
+  if is_truthy "$skip"; then
+    return
+  fi
+  local repo_url="${INSTALL_REPO_URL:-}"
+  local remote="${INSTALL_REPO_REMOTE:-origin}"
+  local branch="${INSTALL_REPO_BRANCH:-}"
+  if [[ ! -d "$repo_root/.git" ]]; then
+    if [[ -n "$repo_url" ]]; then
+      echo "Installer repository sync requested but $repo_root is not a git checkout; skipping." >&2
+    fi
+    return
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    if [[ -n "$repo_url" ]]; then
+      echo "git not available; skipping repository sync." >&2
+    fi
+    return
+  fi
+  (
+    cd "$repo_root"
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [[ -z "$branch" ]]; then
+      branch="$current_branch"
+    fi
+    if [[ -z "$branch" ]]; then
+      branch="main"
+    fi
+    if [[ -n "$current_branch" && "$current_branch" != "$branch" ]]; then
+      echo "Skipping repository sync because current branch '$current_branch' differs from '$branch'." >&2
+      return
+    fi
+    if [[ -n "$repo_url" ]]; then
+      if git remote get-url "$remote" >/dev/null 2>&1; then
+        git remote set-url "$remote" "$repo_url" >/dev/null 2>&1 || true
+      else
+        git remote add "$remote" "$repo_url" >/dev/null 2>&1 || true
+      fi
+    fi
+    echo "Ensuring repository is up to date from ${remote}/${branch}..."
+    if ! git fetch "$remote" "$branch" >/dev/null 2>&1; then
+      echo "Warning: unable to fetch ${remote}/${branch}; continuing with local files." >&2
+      return
+    fi
+    if ! git merge --ff-only FETCH_HEAD >/dev/null 2>&1; then
+      echo "Warning: local checkout has diverged from ${remote}/${branch}; please update manually." >&2
+      return
+    fi
+    echo "Repository updated to latest ${remote}/${branch}."
+  )
+}
+
 prompt_yes_no() {
   local prompt="$1"
   local default="$2"
@@ -242,6 +313,9 @@ obtain_letsencrypt_cert() {
   fi
   echo "Running certbot for $domain..."
   local args=(certbot certonly --standalone --agree-tos --non-interactive --preferred-challenges http -d "$domain")
+  if is_truthy "${LETS_ENCRYPT_STAGING:-}"; then
+    args+=(--staging)
+  fi
   if [[ -n "$email" ]]; then
     args+=(--email "$email")
   else
@@ -346,25 +420,48 @@ configure_cloudflare_dns() {
     return
   fi
 
-  printf "Cloudflare Zone ID: "
+  local zone_default="${CLOUDFLARE_ZONE_ID:-}"
+  local zone_prompt="Cloudflare Zone ID"
+  if [[ -n "$zone_default" ]]; then
+    zone_prompt+=" [$zone_default]"
+  fi
+  zone_prompt+=": "
+  printf "%s" "$zone_prompt"
   local zone_id
   read -r zone_id </dev/tty || zone_id=""
+  zone_id=${zone_id:-$zone_default}
   if [[ -z "$zone_id" ]]; then
     echo "Skipping Cloudflare DNS update (missing zone ID)."
     return
   fi
 
-  printf "Cloudflare API token (DNS edit scope): "
-  local token
-  read -r -s token </dev/tty || token=""
-  echo
+  local token_default="${CLOUDFLARE_API_TOKEN:-}"
+  local token=""
+  if [[ -n "$token_default" ]]; then
+    echo "Using Cloudflare API token from environment."
+    token="$token_default"
+  else
+    printf "Cloudflare API token (DNS edit scope): "
+    read -r -s token </dev/tty || token=""
+    echo
+  fi
   if [[ -z "$token" ]]; then
     echo "Skipping Cloudflare DNS update (missing API token)."
     return
   fi
 
   local proxied=0
-  if prompt_yes_no "Proxy traffic through Cloudflare (orange cloud)? [Y/n] " "y"; then
+  local proxied_env="${CLOUDFLARE_PROXY_DEFAULT:-}"
+  local proxied_prompt_suffix="[Y/n]"
+  local proxied_default_answer="y"
+  if is_falsy "$proxied_env"; then
+    proxied_prompt_suffix="[y/N]"
+    proxied_default_answer="n"
+  elif is_truthy "$proxied_env"; then
+    proxied_prompt_suffix="[Y/n]"
+    proxied_default_answer="y"
+  fi
+  if prompt_yes_no "Proxy traffic through Cloudflare (orange cloud)? ${proxied_prompt_suffix} " "$proxied_default_answer"; then
     proxied=1
   fi
 
@@ -382,9 +479,13 @@ run_install() {
   local platform="${4:-linux}"
 
   echo "== Vendly deployment assistant (${shell_name}) =="
+  maybe_sync_repository "$repo_root"
   require_command python3
 
   local default_port="${API_PORT:-7890}"
+  if [[ ! "$default_port" =~ ^[0-9]+$ ]] || (( default_port < 1 || default_port > 65535 )); then
+    default_port=7890
+  fi
   local port
   port=$(prompt_port "$default_port")
 
@@ -394,24 +495,45 @@ run_install() {
   read -r fallback_host </dev/tty || fallback_host=""
   fallback_host=${fallback_host:-$fallback_default}
 
+  local preset_domain="${PUBLIC_DOMAIN:-}"
+  preset_domain=$(printf '%s' "$preset_domain" | tr '[:upper:]' '[:lower:]')
+  preset_domain=${preset_domain%.}
+  preset_domain=${preset_domain//[[:space:]]/}
+
   local use_domain=0
   local domain=""
-  if prompt_yes_no "Configure a custom domain name? [y/N] " "n"; then
+  if [[ -n "$preset_domain" ]]; then
+    domain="$preset_domain"
     use_domain=1
+    echo "Using preset domain from environment: $domain"
+  fi
+  if (( use_domain == 0 )); then
+    if prompt_yes_no "Configure a custom domain name? [y/N] " "n"; then
+      use_domain=1
+    fi
+  fi
+  if (( use_domain == 1 )); then
+    local domain_input=""
     while true; do
-      printf "Domain (e.g. shop.example.com): "
-      read -r domain </dev/tty || domain=""
-      domain=$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]')
-      domain=${domain%.}
-      domain=${domain//[[:space:]]/}
-      if [[ -z "$domain" ]]; then
+      if [[ -n "$domain" ]]; then
+        printf "Domain (e.g. shop.example.com) [%s]: " "$domain"
+      else
+        printf "Domain (e.g. shop.example.com): "
+      fi
+      read -r domain_input </dev/tty || domain_input=""
+      domain_input=${domain_input:-$domain}
+      domain_input=$(printf '%s' "$domain_input" | tr '[:upper:]' '[:lower:]')
+      domain_input=${domain_input%.}
+      domain_input=${domain_input//[[:space:]]/}
+      if [[ -z "$domain_input" ]]; then
         echo "Domain cannot be empty." >&2
         continue
       fi
-      if [[ ! "$domain" =~ ^[a-z0-9.-]+$ ]]; then
+      if [[ ! "$domain_input" =~ ^[a-z0-9.-]+$ ]]; then
         echo "Domain may only contain letters, numbers, dots, and hyphens." >&2
         continue
       fi
+      domain="$domain_input"
       break
     done
     configure_cloudflare_dns "$domain"
@@ -427,12 +549,24 @@ run_install() {
   check_port_forwarding "$port"
 
   local tls_mode="http"
-  local force_tls=0
+  local scheme="http"
+  local env_force_tls="${FORCE_TLS:-}"
+  local preset_cert="${TLS_CERT_FILE:-}"
+  local preset_key="${TLS_KEY_FILE:-}"
+  local preset_le_email="${LETS_ENCRYPT_EMAIL:-}"
   local cert_path=""
   local key_path=""
-  local le_email=""
+  local le_email="$preset_le_email"
+  local env_public_port="${PUBLIC_PORT:-}"
   local public_port="$port"
-  local scheme="http"
+  if [[ -n "$env_public_port" && "$env_public_port" =~ ^[0-9]+$ ]]; then
+    public_port="$env_public_port"
+  fi
+
+  local force_tls=0
+  if is_truthy "$env_force_tls"; then
+    force_tls=1
+  fi
 
   if (( use_domain == 1 )); then
     echo
@@ -441,10 +575,16 @@ run_install() {
     echo "  [2] Provide existing certificate paths"
     echo "  [3] Self-signed development certificate"
     echo "  [4] Disable HTTPS"
-    printf "Select option [1]: "
+    local tls_choice_default="1"
+    if [[ -n "$preset_cert" && -n "$preset_key" ]]; then
+      tls_choice_default="2"
+    elif is_falsy "$env_force_tls"; then
+      tls_choice_default="4"
+    fi
+    printf "Select option [%s]: " "$tls_choice_default"
     local tls_choice
     read -r tls_choice </dev/tty || tls_choice=""
-    tls_choice=${tls_choice:-1}
+    tls_choice=${tls_choice:-$tls_choice_default}
     case "$tls_choice" in
       1)
         tls_mode="letsencrypt"
@@ -469,7 +609,13 @@ run_install() {
         ;;
     esac
   else
-    if prompt_yes_no "Enable HTTPS with a self-signed certificate? [Y/n] " "y"; then
+    local https_prompt_suffix="[Y/n]"
+    local https_default_answer="y"
+    if is_falsy "$env_force_tls"; then
+      https_prompt_suffix="[y/N]"
+      https_default_answer="n"
+    fi
+    if prompt_yes_no "Enable HTTPS with a self-signed certificate? ${https_prompt_suffix} " "$https_default_answer"; then
       tls_mode="adhoc"
       force_tls=1
     else
@@ -483,11 +629,13 @@ run_install() {
   fi
 
   if (( use_domain == 1 )); then
-    local default_public_port
-    if [[ "$scheme" == "https" ]]; then
-      default_public_port=443
-    else
-      default_public_port=80
+    local default_public_port="$public_port"
+    if [[ -z "$default_public_port" || ! "$default_public_port" =~ ^[0-9]+$ ]]; then
+      if [[ "$scheme" == "https" ]]; then
+        default_public_port=443
+      else
+        default_public_port=80
+      fi
     fi
     printf "External port clients will use for %s [%s]: " "$domain" "$default_public_port"
     local public_port_input
@@ -500,14 +648,26 @@ run_install() {
       public_port=$default_public_port
     fi
   else
-    public_port=$port
+    if [[ -z "$public_port" || ! "$public_port" =~ ^[0-9]+$ ]]; then
+      public_port=$port
+    fi
   fi
 
   if [[ "$tls_mode" == "letsencrypt" ]]; then
+    cert_path=""
+    key_path=""
     echo
     echo "Attempting to obtain a Let's Encrypt certificate (certbot must be installed and TCP/80 must be reachable)."
-    printf "Email for Let's Encrypt expiry notices (optional): "
-    read -r le_email </dev/tty || le_email=""
+    local le_prompt="Email for Let's Encrypt expiry notices (optional)"
+    if [[ -n "$preset_le_email" ]]; then
+      printf "%s [%s]: " "$le_prompt" "$preset_le_email"
+    else
+      printf "%s: " "$le_prompt"
+    fi
+    local le_input=""
+    read -r le_input </dev/tty || le_input=""
+    le_input=${le_input:-$preset_le_email}
+    le_email="$le_input"
     if obtain_letsencrypt_cert "$domain" "$le_email"; then
       local le_dir="/etc/letsencrypt/live/$domain"
       if [[ -d "$le_dir" ]]; then
@@ -520,29 +680,45 @@ run_install() {
     fi
     if [[ -z "$cert_path" || -z "$key_path" ]]; then
       if prompt_yes_no "Provide certificate paths manually now? [Y/n] " "y"; then
+        local cert_input=""
+        local key_input=""
         while true; do
-          printf "Certificate chain path (e.g. /etc/letsencrypt/live/%s/fullchain.pem): " "$domain"
-          read -r cert_path </dev/tty || cert_path=""
-          if [[ -z "$cert_path" ]]; then
+          local cert_prompt
+          cert_prompt=$(printf "Certificate chain path (e.g. /etc/letsencrypt/live/%s/fullchain.pem)" "$domain")
+          if [[ -n "$preset_cert" ]]; then
+            cert_prompt+=" [$preset_cert]"
+          fi
+          printf "%s: " "$cert_prompt"
+          read -r cert_input </dev/tty || cert_input=""
+          cert_input=${cert_input:-$preset_cert}
+          if [[ -z "$cert_input" ]]; then
             echo "Path cannot be empty." >&2
             continue
           fi
-          if [[ ! -f "$cert_path" ]]; then
-            echo "File not found: $cert_path" >&2
-            cert_path=""
+          if [[ ! -f "$cert_input" ]]; then
+            echo "File not found: $cert_input" >&2
+            cert_input=""
             continue
           fi
-          printf "Private key path (e.g. /etc/letsencrypt/live/%s/privkey.pem): " "$domain"
-          read -r key_path </dev/tty || key_path=""
-          if [[ -z "$key_path" ]]; then
+          local key_prompt
+          key_prompt=$(printf "Private key path (e.g. /etc/letsencrypt/live/%s/privkey.pem)" "$domain")
+          if [[ -n "$preset_key" ]]; then
+            key_prompt+=" [$preset_key]"
+          fi
+          printf "%s: " "$key_prompt"
+          read -r key_input </dev/tty || key_input=""
+          key_input=${key_input:-$preset_key}
+          if [[ -z "$key_input" ]]; then
             echo "Path cannot be empty." >&2
             continue
           fi
-          if [[ ! -f "$key_path" ]]; then
-            echo "File not found: $key_path" >&2
-            key_path=""
+          if [[ ! -f "$key_input" ]]; then
+            echo "File not found: $key_input" >&2
+            key_input=""
             continue
           fi
+          cert_path="$cert_input"
+          key_path="$key_input"
           break
         done
       else
@@ -552,38 +728,54 @@ run_install() {
   elif [[ "$tls_mode" == "manual" ]]; then
     echo
     echo "Enter the paths to your existing certificate chain and private key."
+    local cert_input=""
+    local key_input=""
     while true; do
-      printf "Certificate chain path: "
-      read -r cert_path </dev/tty || cert_path=""
-      if [[ -z "$cert_path" ]]; then
+      local cert_prompt="Certificate chain path"
+      if [[ -n "$preset_cert" ]]; then
+        cert_prompt+=" [$preset_cert]"
+      fi
+      printf "%s: " "$cert_prompt"
+      read -r cert_input </dev/tty || cert_input=""
+      cert_input=${cert_input:-$preset_cert}
+      if [[ -z "$cert_input" ]]; then
         echo "Path cannot be empty." >&2
         continue
       fi
-      if [[ ! -f "$cert_path" ]]; then
-        echo "File not found: $cert_path" >&2
-        cert_path=""
+      if [[ ! -f "$cert_input" ]]; then
+        echo "File not found: $cert_input" >&2
+        cert_input=""
         continue
       fi
-      printf "Private key path: "
-      read -r key_path </dev/tty || key_path=""
-      if [[ -z "$key_path" ]]; then
+      local key_prompt="Private key path"
+      if [[ -n "$preset_key" ]]; then
+        key_prompt+=" [$preset_key]"
+      fi
+      printf "%s: " "$key_prompt"
+      read -r key_input </dev/tty || key_input=""
+      key_input=${key_input:-$preset_key}
+      if [[ -z "$key_input" ]]; then
         echo "Path cannot be empty." >&2
         continue
       fi
-      if [[ ! -f "$key_path" ]]; then
-        echo "File not found: $key_path" >&2
-        key_path=""
+      if [[ ! -f "$key_input" ]]; then
+        echo "File not found: $key_input" >&2
+        key_input=""
         continue
       fi
+      cert_path="$cert_input"
+      key_path="$key_input"
       break
     done
   fi
 
-  local public_base_url=""
-  if (( use_domain == 1 )); then
-    public_base_url=$(format_origin "$scheme" "$domain" "$public_port")
-  else
-    public_base_url=$(format_origin "$scheme" "$fallback_host" "$port")
+  local public_base_url="${PUBLIC_BASE_URL:-}"
+  if [[ -z "$public_base_url" ]]; then
+    if (( use_domain == 1 )); then
+      public_base_url=$(format_origin "$scheme" "$domain" "$public_port")
+    else
+      public_base_url=$(format_origin "$scheme" "$fallback_host" "$port")
+    fi
   fi
 
   echo
