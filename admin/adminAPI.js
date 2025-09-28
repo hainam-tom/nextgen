@@ -3,25 +3,91 @@
 // fallback for older browsers.
 
 (function () {
-  const DEFAULT_BASE = 'https://127.0.0.1:7890';
+  const DEFAULT_BASES = ['https://127.0.0.1:7890', 'http://127.0.0.1:7890'];
 
-  function resolveApiBase() {
+  function normaliseBase(raw) {
+    if (!raw) return null;
     try {
-      const { protocol, hostname } = window.location;
-      const safeProtocol = protocol === 'http:' || protocol === 'https:' ? protocol : 'https:';
-      const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
-      return `${safeProtocol}//${host}:7890`;
+      const baseUrl = new URL(raw, window.location.origin);
+      if (baseUrl.protocol !== 'http:' && baseUrl.protocol !== 'https:') {
+        return null;
+      }
+      const port = baseUrl.port ? `:${baseUrl.port}` : '';
+      return `${baseUrl.protocol}//${baseUrl.hostname}${port}`;
     } catch (err) {
-      console.warn('Falling back to default API base:', err);
-      return DEFAULT_BASE;
+      return null;
     }
   }
 
-  const API_BASE = resolveApiBase().replace(/\/$/, '');
+  function collectApiBases() {
+    const seen = new Set();
+    const bases = [];
 
-  function buildUrl(path) {
+    const push = (raw) => {
+      const base = normaliseBase(raw);
+      if (!base || seen.has(base)) return;
+      seen.add(base);
+      bases.push(base);
+      const fallback = base.startsWith('https://')
+        ? `http://${base.slice('https://'.length)}`
+        : `https://${base.slice('http://'.length)}`;
+      if (!seen.has(fallback)) {
+        seen.add(fallback);
+        bases.push(fallback);
+      }
+    };
+
+    const meta = document.querySelector('meta[name="vendly-api-base"]');
+    if (meta && meta.content) push(meta.content);
+
+    const docBase = document.documentElement.getAttribute('data-api-base');
+    if (docBase) push(docBase);
+
+    const bodyBase = document.body && document.body.dataset ? document.body.dataset.apiBase : null;
+    if (bodyBase) push(bodyBase);
+
+    if (window.NEXTGEN_API_BASE) push(window.NEXTGEN_API_BASE);
+    if (Array.isArray(window.NEXTGEN_API_BASES)) {
+      window.NEXTGEN_API_BASES.forEach(push);
+    }
+
+    const dataPort =
+      document.documentElement.getAttribute('data-api-port') ||
+      (document.body && document.body.dataset ? document.body.dataset.apiPort : null);
+    if (dataPort) {
+      const port = String(dataPort).trim();
+      if (port) {
+        try {
+          const { protocol, hostname } = window.location;
+          const proto = protocol === 'http:' ? 'http:' : 'https:';
+          const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
+          push(`${proto}//${host}:${port}`);
+        } catch (err) {
+          console.warn('Unable to derive API host for custom port', err);
+        }
+      }
+    }
+
+    try {
+      const { protocol, hostname, port } = window.location;
+      if (protocol === 'http:' || protocol === 'https:') {
+        const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
+        const suffix = port ? `:${port}` : '';
+        push(`${protocol}//${host}${suffix}`);
+      }
+    } catch (err) {
+      console.warn('Failed to derive API base from location:', err);
+    }
+
+    DEFAULT_BASES.forEach(push);
+    return bases;
+  }
+
+  const API_BASES = collectApiBases();
+
+  function buildUrl(base, path) {
     const suffix = path.startsWith('/') ? path : `/${path}`;
-    return `${API_BASE}${suffix}`;
+    return `${base.replace(/\/$/, '')}${suffix}`;
   }
 
   function normaliseOptions(options) {
@@ -70,7 +136,9 @@
       return parseJsonResponse(response.status, response.statusText, text);
     } catch (err) {
       if (err instanceof TypeError) {
-        throw new Error('Network error while contacting the API');
+        const networkError = new Error('Network error while contacting the API');
+        networkError.code = 'NETWORK';
+        throw networkError;
       }
       throw err;
     }
@@ -90,19 +158,37 @@
           .catch(reject);
       };
       xhr.onerror = function () {
-        reject(new Error('Network error while contacting the API'));
+        const networkError = new Error('Network error while contacting the API');
+        networkError.code = 'NETWORK';
+        reject(networkError);
       };
       xhr.send(options.body || null);
     });
   }
 
-  function request(path, { method = 'GET', body, headers } = {}) {
-    const url = buildUrl(path);
-    const options = normaliseOptions({ method: method.toUpperCase(), body, headers });
-    if (typeof window.fetch === 'function') {
-      return fetchWithFetch(url, options);
+  async function request(path, { method = 'GET', body, headers } = {}) {
+    const baseOptions = normaliseOptions({ method: method.toUpperCase(), body, headers });
+    const dispatcher = typeof window.fetch === 'function' ? fetchWithFetch : fetchWithXhr;
+    const errors = [];
+
+    for (const base of API_BASES) {
+      const url = buildUrl(base, path);
+      const opts = { ...baseOptions, headers: { ...baseOptions.headers } };
+      try {
+        return await dispatcher(url, opts);
+      } catch (err) {
+        if (!err || err.code !== 'NETWORK') {
+          throw err;
+        }
+        errors.push(`${base}: ${err.message}`);
+        console.warn(`Admin API network error for ${base}; trying fallback`, err);
+      }
     }
-    return fetchWithXhr(url, options);
+
+    const detail = errors.length ? errors.join('\n') : API_BASES.join('\n');
+    const aggregate = new Error(`All admin API endpoints are unreachable. Tried:\n${detail}`);
+    aggregate.code = 'NETWORK';
+    throw aggregate;
   }
 
   const AdminAPI = {

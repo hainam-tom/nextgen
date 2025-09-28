@@ -47,3 +47,31 @@ def test_create_product_recovers_from_corrupt_store(configure_test_env):
     products = get_response.get_json()
     assert isinstance(products, list) and len(products) == 1
     assert products[0]["id"] == payload["id"]
+
+
+def test_products_endpoint_falls_back_to_backup(configure_test_env):
+    product_file = configure_test_env
+    client = flask_app.app.test_client()
+    with client.session_transaction() as session:
+        session["user"] = {"email": flask_app.ADMIN_EMAIL}
+        session["is_admin"] = True
+
+    first = client.post(
+        "/products",
+        json={"name": "Primary", "price": 10},
+        base_url="https://localhost",
+    ).get_json()
+
+    client.post(
+        "/products",
+        json={"name": "Secondary", "price": 12},
+        base_url="https://localhost",
+    )
+
+    product_file.write_text("{corrupt", encoding="utf-8")
+
+    resp = client.get("/products", base_url="https://localhost")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert isinstance(data, list) and len(data) >= 1
+    assert any(item["id"] == first["id"] for item in data)

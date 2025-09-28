@@ -13,9 +13,9 @@
 
 from __future__ import annotations
 
-import os
-import json
 import datetime
+import json
+import os
 import re
 from pathlib import Path
 from uuid import uuid4
@@ -31,14 +31,15 @@ from flask import (
     session,
     make_response,
 )
+from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
 from flask_cors import CORS
 from flask_talisman import Talisman
-from authlib.integrations.flask_client import OAuth
-import firebase_admin
 from firebase_admin import credentials, auth as fb_auth
 from pydantic import BaseModel, ValidationError, Field, EmailStr, field_validator
 from typing import Optional
+from werkzeug.middleware.proxy_fix import ProxyFix
+import firebase_admin
 import requests
 
 from .storage import EncryptedJsonStore, JsonStore, StoreError
@@ -50,9 +51,22 @@ BASE_DIR = Path(__file__).resolve().parent
 # ---------------------------------------------------------------------------
 load_dotenv(BASE_DIR / ".env")
 
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "tom05012013@gmail.com").lower()
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-change-me")
 BANKING_SECRET_KEY = os.environ.get("BANKING_SECRET_KEY", SECRET_KEY)
+FORCE_TLS = env_bool("FORCE_TLS", True)
+API_HOST = os.environ.get("API_HOST", "0.0.0.0")
+API_PORT = int(os.environ.get("API_PORT", "7890"))
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+PRODUCT_BACKUPS = int(os.environ.get("PRODUCT_BACKUPS", "3"))
 
 # Google OAuth (server-side)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
@@ -75,7 +89,8 @@ app = Flask(
 app.config.update(
     SECRET_KEY=SECRET_KEY,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=True,  # we're serving with https (adhoc)
+    SESSION_COOKIE_SECURE=FORCE_TLS,
+    PREFERRED_URL_SCHEME="https" if FORCE_TLS else "http",
 )
 
 # CORS (same-origin requests for dashboard; keep modest defaults)
@@ -83,10 +98,13 @@ _default_origins = (
     "https://localhost,https://127.0.0.1,http://localhost,http://127.0.0.1"
 )
 allowed_origins = os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",")
-CORS(app, resources={r"/*": {"origins": [o.strip() for o in allowed_origins]}})
+CORS(app, resources={r"/*": {"origins": [o.strip() for o in allowed_origins if o.strip()]}})
 
 # Security headers
-Talisman(app, content_security_policy=None)
+Talisman(app, content_security_policy=None, force_https=FORCE_TLS)
+
+if env_bool("TRUST_PROXY_HEADERS", True):
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Google OAuth (server-side)
@@ -224,30 +242,68 @@ PRODUCT_FILE = BASE_DIR / "products.json"
 PROFILE_FILE = BASE_DIR / "accounts.json"
 BANKING_FILE = BASE_DIR / "banking.enc"
 
-PROFILE_STORE = JsonStore(PROFILE_FILE)
-BANKING_STORE = EncryptedJsonStore(BANKING_FILE, BANKING_SECRET_KEY)
+PROFILE_STORE = JsonStore(PROFILE_FILE, backups=PRODUCT_BACKUPS)
+BANKING_STORE = EncryptedJsonStore(BANKING_FILE, BANKING_SECRET_KEY, backups=PRODUCT_BACKUPS)
+
+
+def _product_backup_path(path: Path, index: int) -> Path:
+    return path.with_suffix(path.suffix + f".bak{index}")
+
+
+def _product_candidates(path: Path) -> list[Path]:
+    candidates = [path]
+    for idx in range(1, PRODUCT_BACKUPS + 1):
+        candidates.append(_product_backup_path(path, idx))
+    return candidates
+
+
+def _product_rotate_backups(path: Path) -> None:
+    if PRODUCT_BACKUPS <= 0:
+        return
+    for idx in range(PRODUCT_BACKUPS, 0, -1):
+        src = path if idx == 1 else _product_backup_path(path, idx - 1)
+        dest = _product_backup_path(path, idx)
+        if src.exists():
+            try:
+                os.replace(src, dest)
+            except OSError:
+                continue
 
 
 def safe_write_json(path: Path, data: list) -> None:
-    Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _product_rotate_backups(path)
+    payload = json.dumps(data, indent=2)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)
+    tmp_path.unlink(missing_ok=True)
 
 
 def safe_read_json(path: Path) -> list:
-    """Return a list from ``path`` or ``[]`` if the file is missing/corrupt."""
+    """Return a list from ``path`` or a redundant backup when available."""
 
-    if not Path(path).exists():
-        return []
-
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-    if isinstance(data, list):
-        return data
-
-    # The product file was tampered with or an older format wrote an object.
-    # Returning an empty list keeps the API available instead of raising.
+    for candidate in _product_candidates(Path(path)):
+        if not candidate.exists():
+            continue
+        try:
+            raw = candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, list):
+            if candidate != Path(path):
+                print(f"Recovered product catalog from backup {candidate.name}")
+            return data
     return []
 
 
@@ -831,6 +887,13 @@ def admin_dashboard():
                 accounts.append({"email": u.email, "name": u.display_name or ""})
         except Exception as exc:
             print(f"Failed to preload accounts: {exc}")
+    api_base = PUBLIC_BASE_URL or request.url_root.rstrip("/")
+    scheme = request.headers.get("X-Forwarded-Proto")
+    if not PUBLIC_BASE_URL and scheme in {"http", "https"}:
+        host = request.headers.get("X-Forwarded-Host") or request.host
+        api_base = f"{scheme}://{host}".rstrip("/")
+    if not api_base.startswith("http"):
+        api_base = ("https" if FORCE_TLS else "http") + "://" + request.host
     return render_template(
         "index.html",
         products=products,
@@ -838,6 +901,7 @@ def admin_dashboard():
         is_admin=is_admin(),
         user_email=current_user_email(),
         ADMIN_EMAIL=ADMIN_EMAIL,
+        api_base=api_base,
     )
 
 
@@ -855,5 +919,6 @@ def secure_headers(resp):
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Self-signed certificate for local HTTPS
-    app.run(host="0.0.0.0", port=7890, ssl_context="adhoc")
+    # Self-signed certificate for local HTTPS when FORCE_TLS is enabled
+    ssl_ctx = "adhoc" if FORCE_TLS else None
+    app.run(host=API_HOST, port=API_PORT, ssl_context=ssl_ctx)
