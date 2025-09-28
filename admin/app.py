@@ -1,17 +1,3 @@
-"""Simple Flask API for product and account management.
-
-- Products, shopper credentials, and profile data are persisted to local
-  JSON stores with redundant backups for self-hosted resilience.
-- Admin access is granted via the Firebase Admin SDK by tagging specific
-  Google accounts with an ``is_admin`` custom claim. Only the configured
-  service manager can enrol new admins, and Firebase is never exposed to the
-  browser.
-- Admin authentication uses server-side Google OAuth (OIDC) with Authlib;
-  sessions are stored server-side and restricted to accounts tagged as admins.
-- Shopper authentication is provided entirely by the Flask API using
-  bcrypt-strength password hashing and signed session cookies—no Firebase
-  dependency for end-users.
-"""
 
 from __future__ import annotations
 
@@ -86,7 +72,7 @@ ACCOUNT_ENCRYPTION_SECRET = os.environ.get("ACCOUNT_ENCRYPTION_SECRET", SECRET_K
 REVIEW_SECRET_KEY = os.environ.get("REVIEW_SECRET_KEY", ACCOUNT_ENCRYPTION_SECRET)
 FORCE_TLS = env_bool("FORCE_TLS", True)
 API_HOST = os.environ.get("API_HOST", "0.0.0.0")
-API_PORT = int(os.environ.get("API_PORT", "7890"))
+API_PORT = int(os.environ.get("API_PORT", "80"))
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", str(API_PORT)))
 PUBLIC_DOMAIN = os.environ.get("PUBLIC_DOMAIN", "").strip().lower()
 PUBLIC_FALLBACK_HOST = os.environ.get("PUBLIC_FALLBACK_HOST", "").strip()
