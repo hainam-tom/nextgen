@@ -32,6 +32,7 @@ from flask import (
     url_for,
     session,
     make_response,
+    send_from_directory,
 )
 from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
@@ -44,12 +45,17 @@ from typing import Optional
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 import firebase_admin
-from urllib.parse import urlparse
 import secrets
 
-from .storage import EncryptedJsonStore, JsonStore, StoreError
+from commonlib.network import (
+    canonical_origin,
+    infer_public_base_url,
+    infer_allowed_origins,
+)
+from commonlib.storage import EncryptedJsonStore, JsonStore, StoreError
 
 BASE_DIR = Path(__file__).resolve().parent
+COMMONLIB_DIR = BASE_DIR.parent / "commonlib"
 
 # ---------------------------------------------------------------------------
 # Config / Secrets
@@ -62,96 +68,6 @@ def env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def canonical_origin(host: str, port: int, scheme: str) -> str:
-    host = (host or "").strip()
-    if not host:
-        raise ValueError("host is required")
-    scheme = (scheme or "").strip().lower()
-    if scheme not in {"http", "https"}:
-        raise ValueError("scheme must be http or https")
-    if port <= 0 or port > 65535:
-        raise ValueError("port must be between 1 and 65535")
-    default_port = 443 if scheme == "https" else 80
-    suffix = "" if port == default_port else f":{port}"
-    return f"{scheme}://{host}{suffix}"
-
-
-def infer_public_base_url(
-    raw_base: str, domain: str, public_port: int, force_tls: bool
-) -> str:
-    candidate = (raw_base or "").strip().rstrip("/")
-    if candidate:
-        return candidate
-    if domain:
-        scheme = "https" if force_tls else "http"
-        try:
-            return canonical_origin(domain, public_port, scheme)
-        except ValueError:
-            return ""
-    return ""
-
-
-def infer_allowed_origins(
-    configured: str,
-    port: int,
-    scheme: str,
-    domain: str,
-    base_url: str,
-    fallback_host: str,
-    public_port: int,
-) -> list[str]:
-    explicit = (configured or "").strip()
-    if explicit:
-        return [o.strip() for o in explicit.split(",") if o.strip()]
-
-    origins: list[str] = []
-    for local_scheme in ("http", "https"):
-        try:
-            origins.append(canonical_origin("127.0.0.1", port, local_scheme))
-        except ValueError:
-            continue
-
-    if fallback_host:
-        try:
-            origins.append(canonical_origin(fallback_host, port, scheme))
-        except ValueError:
-            pass
-
-    if domain:
-        try:
-            origins.append(canonical_origin(domain, public_port, scheme))
-            if not domain.startswith("www."):
-                origins.append(
-                    canonical_origin(f"www.{domain}", public_port, scheme)
-                )
-        except ValueError:
-            pass
-
-    if base_url:
-        parsed = urlparse(base_url)
-        if parsed.hostname:
-            inferred_scheme = parsed.scheme or scheme
-            inferred_port = (
-                parsed.port
-                if parsed.port
-                else (443 if inferred_scheme == "https" else 80)
-            )
-            try:
-                origins.append(
-                    canonical_origin(parsed.hostname, inferred_port, inferred_scheme)
-                )
-            except ValueError:
-                pass
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for origin in origins:
-        if origin not in seen:
-            seen.add(origin)
-            deduped.append(origin)
-    return deduped
 
 
 SERVICE_MANAGER_EMAIL = (
@@ -208,6 +124,13 @@ app.config.update(
     PUBLIC_PORT=PUBLIC_PORT,
     LETS_ENCRYPT_EMAIL=LETS_ENCRYPT_EMAIL,
 )
+
+
+@app.route("/commonlib/<path:filename>")
+def serve_commonlib(filename: str):
+    """Expose shared browser helpers for both admin and storefront UIs."""
+
+    return send_from_directory(COMMONLIB_DIR, filename)
 
 # CORS (same-origin requests for dashboard; keep modest defaults)
 _default_origins = (

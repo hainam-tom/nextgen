@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from admin.storage import EncryptedJsonStore, JsonStore
+from commonlib.storage import EncryptedJsonStore, JsonStore
 
 
 def test_json_store_recovers_from_backup(tmp_path):

@@ -6,81 +6,21 @@
   const money = n => new Intl.NumberFormat(undefined, { style:'currency', currency:'USD' }).format(n||0);
   const safe = s => (window.DOMPurify ? DOMPurify.sanitize(String(s ?? ''), {ALLOWED_TAGS:[], ALLOWED_ATTR:[]}) : String(s ?? ''));
 
-  const DEFAULT_BASES = ['https://127.0.0.1:7890', 'http://127.0.0.1:7890'];
-
-  function normaliseBase(raw){
-    if(!raw) return null;
-    try {
-      const url = new URL(raw, window.location.origin);
-      if(url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-      const port = url.port ? `:${url.port}` : '';
-      return `${url.protocol}//${url.hostname}${port}`;
-    } catch (err) {
-      return null;
-    }
+  const lib = window.CommonLib;
+  if (!lib || typeof lib.createHttpClient !== 'function') {
+    throw new Error('CommonLib.createHttpClient is required before loading storefront logic');
   }
 
-  function collectApiBases(){
-    const seen = new Set();
-    const bases = [];
-    const push = (raw) => {
-      const base = normaliseBase(raw);
-      if(!base || seen.has(base)) return;
-      seen.add(base);
-      bases.push(base);
-      const fallback = base.startsWith('https://')
-        ? `http://${base.slice('https://'.length)}`
-        : `https://${base.slice('http://'.length)}`;
-      if(!seen.has(fallback)){
-        seen.add(fallback);
-        bases.push(fallback);
-      }
-    };
+  const httpClient = lib.createHttpClient({
+    stickyKey: 'vendly_storefront_api_base',
+    resource: 'storefront API',
+  });
 
-    const meta = document.querySelector('meta[name="vendly-api-base"]');
-    if(meta && meta.content) push(meta.content);
-
-    const docBase = document.documentElement.getAttribute('data-api-base');
-    if(docBase) push(docBase);
-
-    const bodyBase = document.body && document.body.dataset ? document.body.dataset.apiBase : null;
-    if(bodyBase) push(bodyBase);
-
-    if(window.NEXTGEN_API_BASE) push(window.NEXTGEN_API_BASE);
-    if(Array.isArray(window.NEXTGEN_API_BASES)) window.NEXTGEN_API_BASES.forEach(push);
-
-    const dataPort = document.documentElement.getAttribute('data-api-port') || (document.body && document.body.dataset ? document.body.dataset.apiPort : null);
-    if(dataPort){
-      const port = String(dataPort).trim();
-      if(port){
-        try {
-          const { protocol, hostname } = window.location;
-          const proto = protocol === 'http:' ? 'http:' : 'https:';
-          const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
-          push(`${proto}//${host}:${port}`);
-        } catch (err) {
-          console.warn('Unable to derive API host for configured port', err);
-        }
-      }
-    }
-
-    try {
-      const { protocol, hostname, port } = window.location;
-      if(protocol === 'http:' || protocol === 'https:'){
-        const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
-        const suffix = port ? `:${port}` : '';
-        push(`${protocol}//${host}${suffix}`);
-      }
-    } catch (err) {
-      console.warn('Failed to derive API base from location', err);
-    }
-
-    DEFAULT_BASES.forEach(push);
-    return bases;
+  let API_BASES = httpClient.getBases();
+  if (!API_BASES.length) {
+    API_BASES = httpClient.refreshBases();
   }
-
-  const API_BASES = collectApiBases();
-  const PRIMARY_API_BASE = API_BASES[0];
+  const PRIMARY_API_BASE = API_BASES[0] || null;
 
   const adminLink = document.querySelector('[data-admin-link]');
   if (adminLink && PRIMARY_API_BASE) {
@@ -88,113 +28,9 @@
     adminLink.setAttribute('rel', 'noopener');
   }
 
-  function buildApiUrl(base, path = '/'){
-    const cleanBase = (base || '').replace(/\/$/, '');
-    const suffix = path.startsWith('/') ? path : `/${path}`;
-    return `${cleanBase}${suffix}`;
-  }
-
-  function normaliseRequestOptions(options = {}) {
-    const opts = {
-      method: (options.method || 'GET').toUpperCase(),
-      headers: { Accept: 'application/json' },
-    };
-
-    if (options.data !== undefined && options.data !== null) {
-      opts.headers['Content-Type'] = 'application/json';
-      opts.body = typeof options.data === 'string' ? options.data : JSON.stringify(options.data);
-    }
-
-    return opts;
-  }
-
-  function parseJsonText(status, statusText, text) {
-    if (!text) {
-      if (status >= 200 && status < 300) {
-        return null;
-      }
-      throw new Error(`Request failed (${status}): ${statusText || 'Unknown error'}`);
-    }
-
-    let payload;
-    try {
-      payload = JSON.parse(text);
-    } catch (err) {
-      throw new Error('Server returned invalid JSON');
-    }
-
-    if (status >= 200 && status < 300) {
-      return payload;
-    }
-
-    const detail = (payload && (payload.error || payload.message)) || statusText || 'Request failed';
-    throw new Error(`Request failed (${status}): ${detail}`);
-  }
-
-  async function requestWithFetch(url, options) {
-    try {
-      const res = await fetch(url, { ...options, credentials: 'include' });
-      const text = await res.text();
-      return parseJsonText(res.status, res.statusText, text);
-    } catch (err) {
-      if (err instanceof TypeError) {
-        const networkError = new Error('Network error');
-        networkError.code = 'NETWORK';
-        throw networkError;
-      }
-      throw err;
-    }
-  }
-
-  function requestWithXhr(url, options) {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open(options.method || 'GET', url, true);
-      xhr.withCredentials = true;
-      const headers = options.headers || {};
-      Object.keys(headers).forEach((key) => {
-        xhr.setRequestHeader(key, headers[key]);
-      });
-      xhr.onload = function () {
-        try {
-          const data = parseJsonText(xhr.status, xhr.statusText, xhr.responseText);
-          resolve(data);
-        } catch (error) {
-          reject(error);
-        }
-      };
-      xhr.onerror = function () {
-        const networkError = new Error('Network error');
-        networkError.code = 'NETWORK';
-        reject(networkError);
-      };
-      xhr.send(options.body || null);
-    });
-  }
-
-  async function apiRequest(path, options) {
-    const baseOptions = normaliseRequestOptions(options);
-    const dispatcher = typeof window.fetch === 'function' ? requestWithFetch : requestWithXhr;
-    const errors = [];
-
-    for (const base of API_BASES) {
-      const url = buildApiUrl(base, path);
-      const opts = { ...baseOptions, headers: { ...baseOptions.headers } };
-      try {
-        return await dispatcher(url, opts);
-      } catch (err) {
-        if (!err || err.code !== 'NETWORK') {
-          throw err;
-        }
-        errors.push(`${base}: ${err.message}`);
-        console.warn(`Storefront API network error via ${base}; retrying fallback`, err);
-      }
-    }
-
-    const detail = errors.length ? errors.join('\n') : API_BASES.join('\n');
-    const aggregate = new Error(`All storefront API endpoints are unreachable. Tried:\n${detail}`);
-    aggregate.code = 'NETWORK';
-    throw aggregate;
+  function apiRequest(path, options = {}) {
+    const { method = 'GET', data, headers } = options;
+    return httpClient.request(path, { method, body: data, headers });
   }
 
   const isAuthError = (err) => Boolean(err && typeof err.message === 'string' && err.message.includes('(401)'));

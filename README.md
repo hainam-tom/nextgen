@@ -4,6 +4,7 @@
 - Flask app in `admin/app.py` manages products and accounts.
 - Products are stored locally in `admin/products.json`.
 - Accounts are managed through the Firebase Admin SDK (no client-side Firebase).
+- Shared persistence/origin helpers live in `commonlib/` and are consumed by both the backend and browser clients to avoid duplication.
 
 ## Frontend
 - Storefront lives under `user/` and loads products from the API.

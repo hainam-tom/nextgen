@@ -1,7 +1,7 @@
 import pytest
 
 from admin import app as flask_app
-from admin.storage import EncryptedJsonStore, JsonStore
+from commonlib.storage import EncryptedJsonStore, JsonStore
 
 
 @pytest.fixture(autouse=True)

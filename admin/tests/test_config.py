@@ -1,34 +1,40 @@
 import pytest
 
 from admin import app as flask_app
+from commonlib import (
+    canonical_origin,
+    infer_public_base_url,
+    infer_allowed_origins,
+    discover_api_bases,
+)
 
 
 def test_canonical_origin_handles_default_ports():
-    assert flask_app.canonical_origin("example.com", 443, "https") == "https://example.com"
-    assert flask_app.canonical_origin("example.com", 80, "http") == "http://example.com"
+    assert canonical_origin("example.com", 443, "https") == "https://example.com"
+    assert canonical_origin("example.com", 80, "http") == "http://example.com"
 
 
 def test_canonical_origin_invalid_inputs():
     with pytest.raises(ValueError):
-        flask_app.canonical_origin("", 443, "https")
+        canonical_origin("", 443, "https")
     with pytest.raises(ValueError):
-        flask_app.canonical_origin("example.com", 0, "https")
+        canonical_origin("example.com", 0, "https")
     with pytest.raises(ValueError):
-        flask_app.canonical_origin("example.com", 80, "ftp")
+        canonical_origin("example.com", 80, "ftp")
 
 
 def test_infer_public_base_url_prefers_explicit():
-    result = flask_app.infer_public_base_url("https://api.example.com", "shop.example.com", 443, True)
+    result = infer_public_base_url("https://api.example.com", "shop.example.com", 443, True)
     assert result == "https://api.example.com"
 
 
 def test_infer_public_base_url_from_domain():
-    result = flask_app.infer_public_base_url("", "shop.example.com", 443, True)
+    result = infer_public_base_url("", "shop.example.com", 443, True)
     assert result == "https://shop.example.com"
 
 
 def test_infer_allowed_origins_builds_domain_and_fallback():
-    origins = flask_app.infer_allowed_origins(
+    origins = infer_allowed_origins(
         "",
         7890,
         "https",
@@ -45,7 +51,7 @@ def test_infer_allowed_origins_builds_domain_and_fallback():
 
 
 def test_infer_allowed_origins_respects_explicit_list():
-    origins = flask_app.infer_allowed_origins(
+    origins = infer_allowed_origins(
         "https://custom.example,https://other.example",
         7890,
         "https",
@@ -55,3 +61,9 @@ def test_infer_allowed_origins_respects_explicit_list():
         443,
     )
     assert origins == ["https://custom.example", "https://other.example"]
+
+
+def test_discover_api_bases_generates_fallbacks():
+    bases = discover_api_bases(hints=["https://api.example.com"], include_defaults=False)
+    assert bases[0] == "https://api.example.com"
+    assert "http://api.example.com" in bases

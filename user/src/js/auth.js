@@ -20,194 +20,24 @@ const esc = (s) => {
   return d.innerHTML;
 };
 
-// Same-origin so HttpOnly session cookie is sent automatically
-const DEFAULT_BASES = ['https://127.0.0.1:7890', 'http://127.0.0.1:7890'];
-
-function normaliseBase(raw) {
-  if (!raw) return null;
-  try {
-    const url = new URL(raw, window.location.origin);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    const port = url.port ? `:${url.port}` : '';
-    return `${url.protocol}//${url.hostname}${port}`;
-  } catch (err) {
-    return null;
-  }
+const lib = window.CommonLib;
+if (!lib || typeof lib.createHttpClient !== 'function') {
+  throw new Error('CommonLib.createHttpClient is required before loading auth helpers');
 }
 
-function collectApiBases() {
-  const seen = new Set();
-  const bases = [];
-  const push = (raw) => {
-    const base = normaliseBase(raw);
-    if (!base || seen.has(base)) return;
-    seen.add(base);
-    bases.push(base);
-    const fallback = base.startsWith('https://')
-      ? `http://${base.slice('https://'.length)}`
-      : `https://${base.slice('http://'.length)}`;
-    if (!seen.has(fallback)) {
-      seen.add(fallback);
-      bases.push(fallback);
-    }
-  };
-
-  const meta = document.querySelector('meta[name="vendly-api-base"]');
-  if (meta && meta.content) push(meta.content);
-
-  const docBase = document.documentElement.getAttribute('data-api-base');
-  if (docBase) push(docBase);
-
-  const bodyBase = document.body && document.body.dataset ? document.body.dataset.apiBase : null;
-  if (bodyBase) push(bodyBase);
-
-  if (window.NEXTGEN_API_BASE) push(window.NEXTGEN_API_BASE);
-  if (Array.isArray(window.NEXTGEN_API_BASES)) window.NEXTGEN_API_BASES.forEach(push);
-
-  const dataPort =
-    document.documentElement.getAttribute('data-api-port') ||
-    (document.body && document.body.dataset ? document.body.dataset.apiPort : null);
-  if (dataPort) {
-    const port = String(dataPort).trim();
-    if (port) {
-      try {
-        const { protocol, hostname } = window.location;
-        const proto = protocol === 'http:' ? 'http:' : 'https:';
-        const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
-        push(`${proto}//${host}:${port}`);
-      } catch (err) {
-        console.warn('Unable to derive auth API host for configured port', err);
-      }
-    }
-  }
-
-  try {
-    const { protocol, hostname, port } = window.location;
-    if (protocol === 'http:' || protocol === 'https:') {
-      const host = hostname && hostname !== '' ? hostname : '127.0.0.1';
-      const suffix = port ? `:${port}` : '';
-      push(`${protocol}//${host}${suffix}`);
-    }
-  } catch (err) {
-    console.warn('Failed to derive auth API base from location', err);
-  }
-
-  DEFAULT_BASES.forEach(push);
-  return bases;
-}
-
-const API_BASES = collectApiBases();
+const httpClient = lib.createHttpClient({
+  stickyKey: 'vendly_auth_api_base',
+  resource: 'auth API',
+});
 
 // Libraries
 const validatorLib = import('https://cdn.jsdelivr.net/npm/validator@13.9.0/validator.esm.js');
 
-function buildApiUrl(base, path = '/') {
-  const cleanBase = (base || '').replace(/\/$/, '');
-  const suffix = path.startsWith('/') ? path : `/${path}`;
-  return `${cleanBase}${suffix}`;
-}
-
-function normaliseHttpOptions(method, data) {
-  const options = {
-    method: (method || 'GET').toUpperCase(),
-    headers: { Accept: 'application/json' },
-  };
-
-  if (data !== undefined && data !== null) {
-    options.headers['Content-Type'] = 'application/json';
-    options.body = typeof data === 'string' ? data : JSON.stringify(data);
-  }
-
-  return options;
-}
-
-function parseResponsePayload(status, statusText, text) {
-  if (!text) {
-    if (status >= 200 && status < 300) {
-      return null;
-    }
-    throw new Error(`Auth request failed (${status}): ${statusText || 'Unknown error'}`);
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch (err) {
-    throw new Error('Auth service returned invalid JSON');
-  }
-
-  if (status >= 200 && status < 300) {
-    return payload;
-  }
-
-  const detail = (payload && (payload.error || payload.message)) || statusText || 'Request failed';
-  throw new Error(`Auth request failed (${status}): ${detail}`);
-}
-
-async function requestWithFetch(url, options) {
-  try {
-    const res = await fetch(url, { ...options, credentials: 'include' });
-    const text = await res.text();
-    return parseResponsePayload(res.status, res.statusText, text);
-  } catch (err) {
-    if (err instanceof TypeError) {
-      const networkError = new Error('Network error');
-      networkError.code = 'NETWORK';
-      throw networkError;
-    }
-    throw err;
-  }
-}
-
-function requestWithXhr(url, options) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open(options.method, url, true);
-    xhr.withCredentials = true;
-    const headers = options.headers || {};
-    Object.keys(headers).forEach((key) => {
-      xhr.setRequestHeader(key, headers[key]);
-    });
-    xhr.onload = function () {
-      try {
-        const payload = parseResponsePayload(xhr.status, xhr.statusText, xhr.responseText);
-        resolve(payload);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    xhr.onerror = function () {
-      const networkError = new Error('Network error');
-      networkError.code = 'NETWORK';
-      reject(networkError);
-    };
-    xhr.send(options.body || null);
-  });
-}
-
 async function http(path, method = 'get', data) {
-  const baseOptions = normaliseHttpOptions(method, data);
-  const dispatcher = typeof window.fetch === 'function' ? requestWithFetch : requestWithXhr;
-  const errors = [];
-
-  for (const base of API_BASES) {
-    const url = buildApiUrl(base, path);
-    const opts = { ...baseOptions, headers: { ...baseOptions.headers } };
-    try {
-      return await dispatcher(url, opts);
-    } catch (err) {
-      if (!err || err.code !== 'NETWORK') {
-        throw err;
-      }
-      errors.push(`${base}: ${err.message}`);
-      console.warn(`Auth API network error via ${base}; retrying fallback`, err);
-    }
-  }
-
-  const detail = errors.length ? errors.join('\n') : API_BASES.join('\n');
-  const aggregate = new Error(`All auth API endpoints are unreachable. Tried:\n${detail}`);
-  aggregate.code = 'NETWORK';
-  throw aggregate;
+  return httpClient.request(path, {
+    method: (method || 'GET').toUpperCase(),
+    body: data,
+  });
 }
 
 // ========= ACCOUNT STORAGE (UI only / localStorage) =========
