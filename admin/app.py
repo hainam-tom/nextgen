@@ -41,6 +41,7 @@ from typing import Optional
 from werkzeug.middleware.proxy_fix import ProxyFix
 import firebase_admin
 import requests
+from urllib.parse import urlparse
 
 from .storage import EncryptedJsonStore, JsonStore, StoreError
 
@@ -59,13 +60,115 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def canonical_origin(host: str, port: int, scheme: str) -> str:
+    host = (host or "").strip()
+    if not host:
+        raise ValueError("host is required")
+    scheme = (scheme or "").strip().lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("scheme must be http or https")
+    if port <= 0 or port > 65535:
+        raise ValueError("port must be between 1 and 65535")
+    default_port = 443 if scheme == "https" else 80
+    suffix = "" if port == default_port else f":{port}"
+    return f"{scheme}://{host}{suffix}"
+
+
+def infer_public_base_url(
+    raw_base: str, domain: str, public_port: int, force_tls: bool
+) -> str:
+    candidate = (raw_base or "").strip().rstrip("/")
+    if candidate:
+        return candidate
+    if domain:
+        scheme = "https" if force_tls else "http"
+        try:
+            return canonical_origin(domain, public_port, scheme)
+        except ValueError:
+            return ""
+    return ""
+
+
+def infer_allowed_origins(
+    configured: str,
+    port: int,
+    scheme: str,
+    domain: str,
+    base_url: str,
+    fallback_host: str,
+    public_port: int,
+) -> list[str]:
+    explicit = (configured or "").strip()
+    if explicit:
+        return [o.strip() for o in explicit.split(",") if o.strip()]
+
+    origins: list[str] = []
+    for local_scheme in ("http", "https"):
+        try:
+            origins.append(canonical_origin("127.0.0.1", port, local_scheme))
+        except ValueError:
+            continue
+
+    if fallback_host:
+        try:
+            origins.append(canonical_origin(fallback_host, port, scheme))
+        except ValueError:
+            pass
+
+    if domain:
+        try:
+            origins.append(canonical_origin(domain, public_port, scheme))
+            if not domain.startswith("www."):
+                origins.append(
+                    canonical_origin(f"www.{domain}", public_port, scheme)
+                )
+        except ValueError:
+            pass
+
+    if base_url:
+        parsed = urlparse(base_url)
+        if parsed.hostname:
+            inferred_scheme = parsed.scheme or scheme
+            inferred_port = (
+                parsed.port
+                if parsed.port
+                else (443 if inferred_scheme == "https" else 80)
+            )
+            try:
+                origins.append(
+                    canonical_origin(parsed.hostname, inferred_port, inferred_scheme)
+                )
+            except ValueError:
+                pass
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for origin in origins:
+        if origin not in seen:
+            seen.add(origin)
+            deduped.append(origin)
+    return deduped
+
+
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "tom05012013@gmail.com").lower()
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-change-me")
 BANKING_SECRET_KEY = os.environ.get("BANKING_SECRET_KEY", SECRET_KEY)
 FORCE_TLS = env_bool("FORCE_TLS", True)
 API_HOST = os.environ.get("API_HOST", "0.0.0.0")
 API_PORT = int(os.environ.get("API_PORT", "7890"))
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", str(API_PORT)))
+PUBLIC_DOMAIN = os.environ.get("PUBLIC_DOMAIN", "").strip().lower()
+PUBLIC_FALLBACK_HOST = os.environ.get("PUBLIC_FALLBACK_HOST", "").strip()
+TLS_CERT_FILE = os.environ.get("TLS_CERT_FILE", "").strip()
+TLS_KEY_FILE = os.environ.get("TLS_KEY_FILE", "").strip()
+LETS_ENCRYPT_EMAIL = os.environ.get("LETS_ENCRYPT_EMAIL", "").strip()
+RAW_PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+PUBLIC_BASE_URL = infer_public_base_url(
+    RAW_PUBLIC_BASE_URL,
+    PUBLIC_DOMAIN,
+    PUBLIC_PORT,
+    FORCE_TLS,
+)
 PRODUCT_BACKUPS = int(os.environ.get("PRODUCT_BACKUPS", "3"))
 
 # Google OAuth (server-side)
@@ -91,17 +194,37 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=FORCE_TLS,
     PREFERRED_URL_SCHEME="https" if FORCE_TLS else "http",
+    PUBLIC_DOMAIN=PUBLIC_DOMAIN,
+    PUBLIC_BASE_URL=PUBLIC_BASE_URL,
+    PUBLIC_FALLBACK_HOST=PUBLIC_FALLBACK_HOST,
+    PUBLIC_PORT=PUBLIC_PORT,
+    LETS_ENCRYPT_EMAIL=LETS_ENCRYPT_EMAIL,
 )
 
 # CORS (same-origin requests for dashboard; keep modest defaults)
 _default_origins = (
     "https://localhost,https://127.0.0.1,http://localhost,http://127.0.0.1"
 )
-allowed_origins = os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",")
+allowed_origins = infer_allowed_origins(
+    os.environ.get("ALLOWED_ORIGINS", ""),
+    API_PORT,
+    "https" if FORCE_TLS else "http",
+    PUBLIC_DOMAIN,
+    PUBLIC_BASE_URL,
+    PUBLIC_FALLBACK_HOST,
+    PUBLIC_PORT,
+)
+if not allowed_origins:
+    allowed_origins = [o.strip() for o in _default_origins.split(",") if o.strip()]
 CORS(app, resources={r"/*": {"origins": [o.strip() for o in allowed_origins if o.strip()]}})
 
 # Security headers
 Talisman(app, content_security_policy=None, force_https=FORCE_TLS)
+
+if TLS_CERT_FILE and not Path(TLS_CERT_FILE).exists():
+    print(f"WARNING: TLS_CERT_FILE not found at {TLS_CERT_FILE}")
+if TLS_KEY_FILE and not Path(TLS_KEY_FILE).exists():
+    print(f"WARNING: TLS_KEY_FILE not found at {TLS_KEY_FILE}")
 
 if env_bool("TRUST_PROXY_HEADERS", True):
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
@@ -919,6 +1042,11 @@ def secure_headers(resp):
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Self-signed certificate for local HTTPS when FORCE_TLS is enabled
-    ssl_ctx = "adhoc" if FORCE_TLS else None
+    # Prefer explicit certificate pair when provided, fall back to adhoc for local dev
+    if TLS_CERT_FILE and TLS_KEY_FILE:
+        ssl_ctx = (TLS_CERT_FILE, TLS_KEY_FILE)
+    elif FORCE_TLS:
+        ssl_ctx = "adhoc"
+    else:
+        ssl_ctx = None
     app.run(host=API_HOST, port=API_PORT, ssl_context=ssl_ctx)
