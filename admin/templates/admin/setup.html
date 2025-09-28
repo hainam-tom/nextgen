@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Setup</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="p-4 bg-light">
+  <div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h1 class="h3 mb-0">Admin setup</h1>
+      <a class="btn btn-outline-secondary btn-sm" href="/logout">Sign out</a>
+    </div>
+
+    <div class="mb-4">
+      <p class="lead">Signed in as the service manager (<strong>{{ service_manager_email }}</strong>).</p>
+      <p class="text-muted">Grant access to a Google account by completing the one-time Google sign-in below. The selected account will receive Firebase <code>is_admin</code> privileges and can manage the dashboard independently.</p>
+    </div>
+
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    {% if not firebase_ready %}
+      <div class="alert alert-warning">
+        Firebase Admin SDK is not configured. Upload the service account JSON or set the related environment variables before continuing.
+      </div>
+    {% endif %}
+
+    <div class="card mb-4">
+      <div class="card-header">Existing admin accounts</div>
+      <div class="card-body">
+        {% if admins %}
+          <ul class="list-group">
+            {% for admin in admins %}
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>
+                  <strong>{{ admin.email }}</strong>
+                  {% if admin.name %}<span class="text-muted">&middot; {{ admin.name }}</span>{% endif %}
+                </span>
+                <span class="badge bg-secondary">UID: {{ admin.uid }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted mb-0">No admins have been provisioned yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <h2 class="h5">Provision a new admin</h2>
+        <p class="text-muted">Click continue and select the Google account that should manage the dashboard. After the claim is added you’ll be signed out automatically.</p>
+        <a class="btn btn-primary" href="/admin/setup/begin" {% if not firebase_ready %}disabled{% endif %}>Continue with Google</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

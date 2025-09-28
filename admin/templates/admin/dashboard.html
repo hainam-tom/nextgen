@@ -1,0 +1,234 @@
+{% extends 'layout.html' %}
+{% block title %}Admin dashboard{% endblock %}
+{% block content %}
+  <div class="d-flex flex-column flex-lg-row align-items-lg-end justify-content-between gap-3 mb-4">
+    <div>
+      <h1 class="h3 mb-1">Admin dashboard</h1>
+      <p class="text-secondary mb-0">Keep your sample catalog updated and track how shoppers are engaging.</p>
+    </div>
+    {% if session.get('is_admin') or session.get('is_service_manager') %}
+      <a class="btn btn-primary" href="#products">Jump to catalog</a>
+    {% endif %}
+  </div>
+  {% if not session.get('is_admin') and not session.get('is_service_manager') %}
+    <div class="card text-bg-dark border border-secondary">
+      <div class="card-body">
+        <h2 class="h5">Restricted area</h2>
+        <p class="text-secondary mb-0">You must sign in with an authorised Google account to manage inventory. Use the button below to continue.</p>
+        <a class="btn btn-primary mt-3" href="{{ url_for('login') }}">Sign in with Google</a>
+      </div>
+    </div>
+  {% else %}
+    <div class="row g-4 align-items-stretch">
+      <div class="col-xl-4">
+        <div class="card text-bg-dark border border-secondary h-100" id="products">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Add a product</h2>
+            <form method="post" action="{{ url_for('admin_create_product') }}" class="catalog-form">
+              <div class="mb-3">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" class="form-control" placeholder="Sample product" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-control" rows="3" placeholder="Lorem ipsum dolor sit amet."></textarea>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Price</label>
+                <input type="number" step="0.01" name="price" class="form-control" min="0" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Image URL</label>
+                <input type="url" name="image" class="form-control" placeholder="https://example.com/image.jpg">
+              </div>
+              <button type="submit" class="btn btn-primary w-100">Add product</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-8">
+        <div class="card text-bg-dark border border-secondary h-100">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex justify-content-between align-items-start mb-3">
+              <div>
+                <h2 class="h5 mb-1">Catalog overview</h2>
+                <p class="text-secondary small mb-0">{{ products|length }} product{{ 's' if products|length != 1 else '' }} published for shoppers.</p>
+              </div>
+              <span class="badge bg-primary-subtle text-light">Live sample</span>
+            </div>
+            {% if products %}
+              <div class="table-responsive">
+                <table class="table table-dark align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th scope="col">Product</th>
+                      <th scope="col" class="text-center">Price</th>
+                      <th scope="col" class="text-center">Reviews</th>
+                      <th scope="col" class="text-end">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for product in products %}
+                      {% set summary = review_meta_map.get(product.id) %}
+                      <tr>
+                        <td>
+                          <div class="fw-semibold">{{ product.name }}</div>
+                          <div class="text-secondary small">{{ product.description or 'Lorem ipsum dolor sit amet.' }}</div>
+                        </td>
+                        <td class="text-center">${{ '%.2f'|format(product.price) }}</td>
+                        <td class="text-center">
+                          {% if summary.average %}
+                            <span class="text-warning">{{ summary.average }} ★</span>
+                          {% else %}
+                            <span class="text-secondary">—</span>
+                          {% endif %}
+                        </td>
+                        <td class="text-end">
+                          <div class="btn-group btn-group-sm" role="group">
+                            <a class="btn btn-outline-light" href="{{ url_for('product_detail', product_id=product.id) }}">Preview</a>
+                            <form method="post" action="{{ url_for('admin_delete_product', product_id=product.id) }}" onsubmit="return confirm('Remove this product?');">
+                              <button type="submit" class="btn btn-outline-danger">Delete</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% else %}
+              <div class="alert alert-info mb-0">No products in the catalog yet — start by adding a sample item.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-4 mt-1" id="analytics">
+      <div class="col-xl-6">
+        <div class="card text-bg-dark border border-secondary h-100">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h2 class="h5 mb-0">Weekly analytics</h2>
+              <span class="badge bg-secondary">Example data</span>
+            </div>
+            <div class="row g-3 mb-3">
+              <div class="col-sm-6">
+                <div class="metric-tile">
+                  <span class="metric-tile__label">Products</span>
+                  <span class="metric-tile__value">{{ analytics.totals.products }}</span>
+                </div>
+              </div>
+              <div class="col-sm-6">
+                <div class="metric-tile">
+                  <span class="metric-tile__label">Avg. rating</span>
+                  <span class="metric-tile__value">{{ analytics.totals.avg_rating or '–' }}</span>
+                </div>
+              </div>
+              <div class="col-sm-6">
+                <div class="metric-tile">
+                  <span class="metric-tile__label">Reviews</span>
+                  <span class="metric-tile__value">{{ analytics.totals.reviews }}</span>
+                </div>
+              </div>
+              <div class="col-sm-6">
+                <div class="metric-tile">
+                  <span class="metric-tile__label">Conversion</span>
+                  <span class="metric-tile__value">{{ analytics.totals.conversion }}%</span>
+                </div>
+              </div>
+            </div>
+            <div class="table-responsive small">
+              <table class="table table-dark table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th class="text-end">Visits</th>
+                    <th class="text-end">Orders</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for entry in analytics.timeline %}
+                    <tr>
+                      <td>{{ entry.label }}</td>
+                      <td class="text-end">{{ entry.visits }}</td>
+                      <td class="text-end">{{ entry.orders }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card text-bg-dark border border-secondary h-100">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h2 class="h5 mb-0">Top products</h2>
+              <span class="badge bg-secondary">Work in progress</span>
+            </div>
+            {% if analytics.top_products %}
+              <ul class="list-group list-group-flush">
+                {% for item in analytics.top_products %}
+                  <li class="list-group-item bg-dark text-light d-flex justify-content-between align-items-center">
+                    <div>
+                      <div class="fw-semibold">{{ item.name }}</div>
+                      <div class="text-secondary small">${{ '%.2f'|format(item.price) }}</div>
+                    </div>
+                    <div class="text-warning small">
+                      {% if item.summary.average %}
+                        {{ item.summary.average }} ★
+                      {% else %}
+                        No reviews yet
+                      {% endif %}
+                    </div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="text-secondary mb-0">Add products to populate this list.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-4 mt-1" id="work-in-progress">
+      <div class="col-xl-8">
+        <div class="card text-bg-dark border border-secondary h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Coming soon</h2>
+            <div class="row g-3">
+              {% for item in work_in_progress %}
+                <div class="col-md-6">
+                  <div class="border border-secondary rounded p-3 h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                      <span class="fw-semibold">{{ item.name }}</span>
+                      <span class="badge bg-dark text-secondary">Work in progress</span>
+                    </div>
+                    <p class="text-secondary small mb-0">{{ item.description }}</p>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-4">
+        <div class="card text-bg-dark border border-secondary h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-2">Service manager tools</h2>
+            {% if session.get('user', {}).get('email') == service_manager_email %}
+              <p class="text-secondary small">You are signed in as the service manager ({{ service_manager_email }}). Use the button below to invite another Google account into Firebase as an admin.</p>
+              <a class="btn btn-outline-primary w-100" href="{{ url_for('admin_setup_begin') }}">Launch Google account picker</a>
+              <p class="text-secondary small mt-3 mb-0">Vendly will open a Google prompt so you can authenticate a customer's email and add it as an admin.</p>
+            {% else %}
+              <p class="text-secondary small">Only the primary service manager ({{ service_manager_email }}) sees onboarding tools here.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}
