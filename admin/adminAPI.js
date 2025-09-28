@@ -1,23 +1,69 @@
-// static/admin-api.js
-const axiosLib = import('https://cdn.jsdelivr.net/npm/axios@1.11.0/+esm');
+// Vendly admin helper without external runtime dependencies.
+const API_HOST = '127.0.0.1:7890';
 
-// point to backend running on port 7890 regardless of front-end port
-const API_URL = `127.0.0.1:7890`
+function buildUrl(path) {
+  const base = API_HOST.includes('://')
+    ? API_HOST
+    : `${window.location.protocol}//${API_HOST}`;
+  return `${base}${path}`;
+}
+
+function toError(response, bodyText) {
+  const status = response.status || '';
+  const reason = bodyText || response.statusText || 'Request failed';
+  return new Error(`API request failed: ${status} ${reason}`.trim());
+}
 
 async function apiFetch(path, options = {}) {
-  try {
-    const axios = (await axiosLib).default;
-    const res = await axios({
-      url: `${API_URL}${path}`,
-      withCredentials: true,
-      ...options,
+  const { method = 'GET', data, headers = {} } = options;
+  const url = buildUrl(path);
+
+  const payload = data !== undefined ? JSON.stringify(data) : undefined;
+  const commonHeaders = payload
+    ? { 'Content-Type': 'application/json', ...headers }
+    : headers;
+
+  if (window.fetch) {
+    const response = await fetch(url, {
+      method,
+      body: payload,
+      credentials: 'include',
+      headers: commonHeaders,
     });
-    return res.data;
-  } catch (err) {
-    const status = err.response?.status || '';
-    const details = err.response?.data?.error || err.message;
-    throw new Error(`API request failed: ${status} ${details}`.trim());
+    if (!response.ok) {
+      const text = await response.text();
+      throw toError(response, text);
+    }
+    return response.status === 204 ? null : response.json();
   }
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.withCredentials = true;
+    Object.entries(commonHeaders).forEach(([key, value]) => {
+      xhr.setRequestHeader(key, value);
+    });
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (!xhr.responseText) {
+          resolve(null);
+          return;
+        }
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (err) {
+          reject(err);
+        }
+      } else {
+        reject(toError(xhr, xhr.responseText));
+      }
+    };
+
+    xhr.onerror = () => reject(toError(xhr));
+    xhr.send(payload);
+  });
 }
 
 // Public helpers
@@ -31,6 +77,17 @@ function getAccount(id) { return apiFetch(`/accounts/${id}`); }
 function createAccount(account) { return apiFetch('/accounts', { method: 'post', data: account }); }
 function updateAccount(id, account) { return apiFetch(`/accounts/${id}`, { method: 'put', data: account }); }
 function deleteAccount(id) { return apiFetch(`/accounts/${id}`, { method: 'delete' }); }
+function getAccountProfile(id) { return apiFetch(`/accounts/${id}/profile`); }
+function updateAccountProfile(id, profile) {
+  return apiFetch(`/accounts/${id}/profile`, { method: 'put', data: profile });
+}
+function getAccountBanking(id) { return apiFetch(`/accounts/${id}/banking`); }
+function updateAccountBanking(id, data) {
+  return apiFetch(`/accounts/${id}/banking`, { method: 'put', data });
+}
+function deleteAccountBanking(id) {
+  return apiFetch(`/accounts/${id}/banking`, { method: 'delete' });
+}
 
 window.AdminAPI = {
   getProducts,
@@ -43,4 +100,9 @@ window.AdminAPI = {
   createAccount,
   updateAccount,
   deleteAccount,
+  getAccountProfile,
+  updateAccountProfile,
+  getAccountBanking,
+  updateAccountBanking,
+  deleteAccountBanking,
 };

@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import os
-import json
 import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -30,34 +29,35 @@ from flask import (
     session,
     make_response,
 )
-from dotenv import load_dotenv
 from flask_cors import CORS
 from flask_talisman import Talisman
 from authlib.integrations.flask_client import OAuth
 import firebase_admin
 from firebase_admin import credentials, auth as fb_auth
 from pydantic import BaseModel, ValidationError, Field, EmailStr
-from typing import Optional
+from typing import Optional, Any
 import requests
+
+from commonlib import (
+    load_admin_config,
+    load_service_account,
+    EncryptedJSONStore,
+    JsonStore,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# ---------------------------------------------------------------------------
-# Config / Secrets
-# ---------------------------------------------------------------------------
-load_dotenv(BASE_DIR / ".env")
+CONFIG = load_admin_config(BASE_DIR)
 
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "tom05012013@gmail.com").lower()
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-change-me")
+ADMIN_EMAIL = CONFIG.admin_email
+SECRET_KEY = CONFIG.secret_key
 
-# Google OAuth (server-side)
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_CLIENT_ID = CONFIG.google_client_id
+GOOGLE_CLIENT_SECRET = CONFIG.google_client_secret
 
-# Identity Toolkit (server-only password auth for end-users)
-FIREBASE_WEB_API_KEY = os.environ.get("FIREBASE_WEB_API_KEY", "").strip()
-SESSION_COOKIE_NAME = "fb_session"
-SESSION_MAX_DAYS = int(os.environ.get("SESSION_MAX_DAYS", "5"))
+FIREBASE_WEB_API_KEY = CONFIG.firebase_web_api_key
+SESSION_COOKIE_NAME = CONFIG.session_cookie_name
+SESSION_MAX_DAYS = CONFIG.session_max_days
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -75,11 +75,8 @@ app.config.update(
 )
 
 # CORS (same-origin requests for dashboard; keep modest defaults)
-_default_origins = (
-    "https://localhost,https://127.0.0.1,http://localhost,http://127.0.0.1"
-)
-allowed_origins = os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",")
-CORS(app, resources={r"/*": {"origins": [o.strip() for o in allowed_origins]}})
+allowed_origins = [o for o in CONFIG.allowed_origins]
+CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
 # Security headers
 Talisman(app, content_security_policy=None)
@@ -105,33 +102,24 @@ oauth.register(
 # ---------------------------------------------------------------------------
 
 
-def load_credentials() -> dict:
-    """Return service account credentials from file or environment."""
-    auth_file = BASE_DIR / "firebase-auth.json"
-    if auth_file.exists():
-        return json.loads(auth_file.read_text(encoding="utf-8"))
+def load_credentials() -> Optional[dict[str, Any]]:
+    """Return service account credentials from disk/env when available."""
 
-    secret_file = BASE_DIR / "clientSecret.json"
-    if secret_file.exists():
-        data = json.loads(secret_file.read_text(encoding="utf-8"))
-        if data.get("type") == "service_account":
-            return data
-
-    return {
-        "type": "service_account",
-        "project_id": os.environ.get("FIREBASE_PROJECT_ID", ""),
-        # IMPORTANT: env var usually stores newlines as \n
-        "private_key": os.environ.get("FIREBASE_PRIVATE_KEY", "").replace("\\n", "\n"),
-        "client_email": os.environ.get("FIREBASE_CLIENT_EMAIL", ""),
-        "token_uri": "https://oauth2.googleapis.com/token",
-    }
+    return load_service_account(BASE_DIR, os.environ)
 
 
 FIREBASE_READY = False
 try:
-    cred = credentials.Certificate(load_credentials())
-    firebase_admin.initialize_app(cred)
-    FIREBASE_READY = True
+    credential_info = load_credentials()
+    if credential_info:
+        if firebase_admin._apps:
+            firebase_admin.get_app()
+        else:
+            cred = credentials.Certificate(credential_info)
+            firebase_admin.initialize_app(cred)
+        FIREBASE_READY = True
+    else:
+        raise RuntimeError("credentials not provided")
 except Exception as exc:  # optional
     print(f"Firebase Admin disabled: {exc}")
 
@@ -160,40 +148,128 @@ class AccountUpdateModel(BaseModel):
     disabled: Optional[bool] = None
 
 
+class ProfileUpdateModel(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    address: Optional[dict[str, Any]] = None
+
+
+class BankingUpdateModel(BaseModel):
+    accounts: Optional[list[dict[str, Any]]] = None
+    cards: Optional[list[dict[str, Any]]] = None
+
+
 # ---------------------------------------------------------------------------
-# Local JSON helpers (PRODUCTS ONLY)
+# Local JSON helpers (products, accounts, banking)
 # ---------------------------------------------------------------------------
 PRODUCT_FILE = BASE_DIR / "products.json"
+PRODUCT_STORE = JsonStore(PRODUCT_FILE)
+ACCOUNT_STORE = JsonStore(BASE_DIR / "accounts.json")
+BANKING_STORE = EncryptedJSONStore.from_environment(
+    BASE_DIR / "banking.json.enc", os.environ, BASE_DIR / ".fernet.key"
+)
 
 
-def safe_write_json(path: Path, data: list) -> None:
-    Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _load_account_profiles() -> dict[str, dict[str, Any]]:
+    raw = ACCOUNT_STORE.read(default={})
+    if isinstance(raw, dict):
+        profiles = raw.get("profiles")
+        if isinstance(profiles, dict):
+            return profiles
+    elif isinstance(raw, list):
+        profiles = {}
+        for item in raw:
+            if isinstance(item, dict) and item.get("uid"):
+                profiles[item["uid"]] = item
+        return profiles
+    return {}
 
 
-def safe_read_json(path: Path) -> list:
-    if Path(path).exists():
-        try:
-            return json.loads(Path(path).read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
+def _store_account_profiles(profiles: dict[str, dict[str, Any]]) -> None:
+    ACCOUNT_STORE.write({"profiles": profiles})
+
+
+def upsert_account_profile(
+    uid: str,
+    *,
+    email: Optional[str] = None,
+    name: Optional[str] = None,
+    address: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    profiles = _load_account_profiles()
+    profile = profiles.get(uid, {"uid": uid})
+    if email is not None:
+        profile["email"] = email
+    if name is not None:
+        profile["name"] = name
+    if address is not None:
+        profile["address"] = address
+    profiles[uid] = profile
+    _store_account_profiles(profiles)
+    return profile
+
+
+def get_account_profile(uid: str) -> Optional[dict[str, Any]]:
+    return _load_account_profiles().get(uid)
+
+
+def delete_account_profile(uid: str) -> None:
+    profiles = _load_account_profiles()
+    if uid in profiles:
+        profiles.pop(uid)
+        _store_account_profiles(profiles)
+
+
+def _load_banking_payload() -> dict[str, Any]:
+    raw = BANKING_STORE.read(default={})
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+def get_account_banking(uid: str) -> dict[str, Any]:
+    payload = _load_banking_payload()
+    accounts = payload.get("accounts")
+    if not isinstance(accounts, dict):
+        return {}
+    data = accounts.get(uid)
+    return data if isinstance(data, dict) else {}
+
+
+def set_account_banking(uid: str, banking: dict[str, Any]) -> dict[str, Any]:
+    payload = _load_banking_payload()
+    accounts = payload.setdefault("accounts", {})
+    if not isinstance(accounts, dict):
+        accounts = {}
+        payload["accounts"] = accounts
+    accounts[uid] = banking
+    BANKING_STORE.write(payload)
+    return banking
+
+
+def delete_account_banking(uid: str) -> None:
+    payload = _load_banking_payload()
+    accounts = payload.get("accounts")
+    if isinstance(accounts, dict) and uid in accounts:
+        accounts.pop(uid)
+        BANKING_STORE.write(payload)
 
 
 def list_products_local() -> list:
-    return safe_read_json(PRODUCT_FILE)
+    return PRODUCT_STORE.read(default=[])
 
 
 def append_product_local(doc: dict) -> str:
-    items = safe_read_json(PRODUCT_FILE)
+    items = PRODUCT_STORE.read(default=[])
     doc_id = str(uuid4())
     doc["id"] = doc_id
     items.append(doc)
-    safe_write_json(PRODUCT_FILE, items)
+    PRODUCT_STORE.write(items)
     return doc_id
 
 
 def get_product_local(doc_id: str) -> dict | None:
-    items = safe_read_json(PRODUCT_FILE)
+    items = PRODUCT_STORE.read(default=[])
     for item in items:
         if item.get("id") == doc_id:
             return item
@@ -202,22 +278,22 @@ def get_product_local(doc_id: str) -> dict | None:
 
 def update_product_local(doc_id: str, updates: dict) -> dict | None:
     """Update product; returns updated product or None."""
-    items = safe_read_json(PRODUCT_FILE)
+    items = PRODUCT_STORE.read(default=[])
     for item in items:
         if item.get("id") == doc_id:
             item.update({k: v for k, v in updates.items() if v is not None})
-            safe_write_json(PRODUCT_FILE, items)
+            PRODUCT_STORE.write(items)
             return item
     return None
 
 
 def delete_product_local(doc_id: str) -> bool:
     """Remove product from local JSON store. Returns True if deleted."""
-    items = safe_read_json(PRODUCT_FILE)
+    items = PRODUCT_STORE.read(default=[])
     new_items = [p for p in items if p.get("id") != doc_id]
     if len(new_items) == len(items):
         return False
-    safe_write_json(PRODUCT_FILE, new_items)
+    PRODUCT_STORE.write(new_items)
     return True
 
 
@@ -519,6 +595,7 @@ def create_account():
         user = fb_auth.create_user(
             email=account.email, display_name=account.name or None
         )
+        upsert_account_profile(user.uid, email=account.email, name=account.name)
         return jsonify({"id": user.uid}), 201
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -542,6 +619,11 @@ def update_account(uid):
             disabled=account.disabled,
         )
         updated = fb_auth.get_user(uid)
+        upsert_account_profile(
+            updated.uid,
+            email=updated.email,
+            name=updated.display_name or None,
+        )
         return jsonify(
             {
                 "id": updated.uid,
@@ -564,11 +646,72 @@ def delete_account(uid):
         return jsonify({"error": "Firebase Admin not configured"}), 503
     try:
         fb_auth.delete_user(uid)
+        delete_account_profile(uid)
+        delete_account_banking(uid)
         return jsonify({"ok": True})
     except fb_auth.UserNotFoundError:
         return jsonify({"error": "Not found"}), 404
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/accounts/<uid>/profile", methods=["GET", "PUT"])
+@admin_required
+def manage_account_profile(uid):
+    if request.method == "GET":
+        profile = get_account_profile(uid) or {"uid": uid}
+        return jsonify(profile)
+
+    try:
+        payload = request.get_json(force=True) or {}
+        data = ProfileUpdateModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+
+    profile = upsert_account_profile(
+        uid,
+        email=data.email,
+        name=data.name,
+        address=data.address,
+    )
+    if profile.get("email") is None and FIREBASE_READY:
+        try:
+            fb_user = fb_auth.get_user(uid)
+            profile = upsert_account_profile(
+                uid,
+                email=fb_user.email,
+                name=fb_user.display_name or None,
+                address=data.address,
+            )
+        except Exception:
+            pass
+    return jsonify(profile)
+
+
+@app.route("/accounts/<uid>/banking", methods=["GET", "PUT", "DELETE"])
+@admin_required
+def manage_account_banking(uid):
+    if request.method == "GET":
+        return jsonify(get_account_banking(uid))
+
+    if request.method == "DELETE":
+        delete_account_banking(uid)
+        return jsonify({"ok": True})
+
+    try:
+        payload = request.get_json(force=True) or {}
+        data = BankingUpdateModel(**payload)
+    except ValidationError as err:
+        return jsonify({"error": err.errors()}), 400
+
+    record = get_account_banking(uid)
+    if data.cards is not None:
+        record["cards"] = data.cards
+    if data.accounts is not None:
+        record["accounts"] = data.accounts
+    record["updated_at"] = datetime.datetime.utcnow().isoformat()
+    set_account_banking(uid, record)
+    return jsonify(record)
 
 
 # ---------------------------------------------------------------------------
