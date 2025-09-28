@@ -1,0 +1,21 @@
+{
+  "brand": "Vendly Sample Shop",
+  "tagline": "Local goods, instantly ready",
+  "hero": {
+    "eyebrow": "Freshly stocked",
+    "headline": "Launch a storefront in minutes",
+    "body": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Suspendisse lorem nibh, porta ut felis eget, suscipit semper lorem.",
+    "primary_button": {
+      "label": "Shop collection",
+      "href": "#products"
+    },
+    "secondary_button": {
+      "label": "View cart",
+      "href": "/cart"
+    }
+  },
+  "footer": {
+    "message": "Vendly makes it simple to launch a local storefront in minutes.",
+    "support_email": "hello@vendly.local"
+  }
+}

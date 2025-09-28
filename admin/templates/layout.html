@@ -9,22 +9,32 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
     {% block extra_css %}{% endblock %}
   </head>
-  <body class="bg-dark text-light">
-    <nav class="navbar navbar-expand-lg navbar-dark bg-black border-bottom border-secondary">
-      <div class="container">
-        <a class="navbar-brand" href="{{ url_for('storefront_home') }}">Vendly</a>
+  <body class="app-body text-light d-flex flex-column">
+    <nav class="navbar navbar-expand-lg navbar-dark navbar-glass border-bottom border-secondary py-3">
+      <div class="container main-content">
+        <a class="navbar-brand" href="{{ url_for('storefront_home') }}">{{ site_settings.brand }}</a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
           <span class="navbar-toggler-icon"></span>
         </button>
         <div class="collapse navbar-collapse" id="navbarNav">
           <ul class="navbar-nav me-auto mb-2 mb-lg-0">
             <li class="nav-item"><a class="nav-link" href="{{ url_for('storefront_home') }}">Storefront</a></li>
+            <li class="nav-item"><a class="nav-link" href="{{ url_for('storefront_home') }}#products">Products</a></li>
             <li class="nav-item"><a class="nav-link" href="{{ url_for('storefront_cart') }}">Cart ({{ cart_count }})</a></li>
             {% if current_user %}
               <li class="nav-item"><a class="nav-link" href="{{ url_for('account_settings') }}">Account</a></li>
             {% endif %}
             {% if session.get('is_admin') %}
-              <li class="nav-item"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Admin</a></li>
+              <li class="nav-item dropdown">
+                <a class="nav-link dropdown-toggle" href="#" id="adminMenu" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                  Admin
+                </a>
+                <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="adminMenu">
+                  <li><a class="dropdown-item" href="{{ url_for('admin_dashboard') }}">Dashboard</a></li>
+                  <li><a class="dropdown-item" href="{{ url_for('admin_dashboard') }}#analytics">Analytics</a></li>
+                  <li><a class="dropdown-item" href="{{ url_for('admin_dashboard') }}#work-in-progress">Roadmap</a></li>
+                </ul>
+              </li>
             {% endif %}
           </ul>
           <div class="d-flex align-items-center gap-2">
@@ -40,18 +50,31 @@
         </div>
       </div>
     </nav>
-    <main class="container py-4">
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-          <div class="mb-3">
-            {% for category, message in messages %}
-              <div class="alert alert-{{ category }}">{{ message }}</div>
-            {% endfor %}
-          </div>
-        {% endif %}
-      {% endwith %}
-      {% block content %}{% endblock %}
+    <main class="flex-grow-1 py-5">
+      <div class="container main-content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="mb-4">
+              {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+      </div>
     </main>
+    <footer class="app-footer">
+      <div class="container main-content small text-center text-lg-start">
+        <div class="d-lg-flex align-items-center justify-content-between gap-3">
+          <span>&copy; {{ site_settings.brand }} {{ current_year }}</span>
+          <span class="text-muted">{{ site_settings.footer.message }}</span>
+        </div>
+        <div class="text-muted mt-2">
+          Need changes? Edit <code>site.json</code> or email <a class="link-light" href="mailto:{{ site_settings.footer.support_email }}">{{ site_settings.footer.support_email }}</a>.
+        </div>
+      </div>
+    </footer>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     {% block extra_js %}{% endblock %}
   </body>

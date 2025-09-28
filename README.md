@@ -45,4 +45,12 @@ Environment variables of note:
 - `PUBLIC_FALLBACK_HOST` – technician/local hostname retained for direct connections.
 - `TLS_CERT_FILE` / `TLS_KEY_FILE` – optional absolute paths to production TLS assets served by Flask.
 - `LETS_ENCRYPT_EMAIL` – stored contact for certificate renewal reminders.
+- `ACCOUNT_ENCRYPTION_SECRET` – base secret used to derive the daily encryption key for shopper accounts.
+- `REVIEW_SECRET_KEY` / `BANKING_SECRET_KEY` – optional overrides for encrypting product feedback and stored payment details.
 - `PRODUCT_BACKUPS` – number of rotating backups preserved for JSON stores (default `3`).
+
+### Customise each storefront quickly
+
+- Edit `admin/site.json` to update the shop name, hero copy, and call-to-action buttons without touching templates.
+- Replace or expand the sample catalog in `admin/products.json`; each entry includes placeholder lorem descriptions and prices from $1–$10.
+- Shopper reviews and saved accounts are encrypted locally using a rotating daily key, so each vendor’s data stays isolated even when self-hosted.

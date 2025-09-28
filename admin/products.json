@@ -1,7 +1,72 @@
 [
   {
-    "name": "weqfsf",
-    "price": 123.0,
-    "id": "ff9d8872-b0bd-4e90-926d-4218031e7473"
+    "id": "prod-01",
+    "name": "Lorem Candle",
+    "price": 1.0,
+    "description": "Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
+    "image": null
+  },
+  {
+    "id": "prod-02",
+    "name": "Ipsum Mug",
+    "price": 2.0,
+    "description": "Curabitur blandit tempus porttitor with a ceramic finish.",
+    "image": null
+  },
+  {
+    "id": "prod-03",
+    "name": "Dolor Notebook",
+    "price": 3.0,
+    "description": "Sed posuere consectetur est at lobortis for everyday planning.",
+    "image": null
+  },
+  {
+    "id": "prod-04",
+    "name": "Sit Pen Set",
+    "price": 4.0,
+    "description": "Etiam porta sem malesuada magna mollis euismod.",
+    "image": null
+  },
+  {
+    "id": "prod-05",
+    "name": "Amet Tote Bag",
+    "price": 5.0,
+    "description": "Maecenas sed diam eget risus varius blandit sit amet non magna.",
+    "image": null
+  },
+  {
+    "id": "prod-06",
+    "name": "Consectetur Tea",
+    "price": 6.0,
+    "description": "Praesent commodo cursus magna, vel scelerisque nisl consectetur.",
+    "image": null
+  },
+  {
+    "id": "prod-07",
+    "name": "Adipiscing Throw",
+    "price": 7.0,
+    "description": "Donec sed odio dui with a cosy woven pattern for display.",
+    "image": null
+  },
+  {
+    "id": "prod-08",
+    "name": "Elit Wall Art",
+    "price": 8.0,
+    "description": "Vestibulum id ligula porta felis euismod semper in frame.",
+    "image": null
+  },
+  {
+    "id": "prod-09",
+    "name": "Nulla Clock",
+    "price": 9.0,
+    "description": "Nulla vitae elit libero, a pharetra augue for punctual displays.",
+    "image": null
+  },
+  {
+    "id": "prod-10",
+    "name": "Facilisi Lamp",
+    "price": 10.0,
+    "description": "Integer posuere erat a ante venenatis dapibus posuere velit aliquet.",
+    "image": null
   }
 ]

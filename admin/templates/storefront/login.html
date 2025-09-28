@@ -7,6 +7,9 @@
         <div class="card-body">
           <h1 class="h4 mb-3">Sign in</h1>
           <form method="post" action="{{ url_for('auth_login') }}">
+            {% if request.args.get('next') %}
+              <input type="hidden" name="next" value="{{ request.args.get('next') }}">
+            {% endif %}
             <div class="mb-3">
               <label class="form-label">Email</label>
               <input type="email" name="email" class="form-control" required>

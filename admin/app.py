@@ -34,6 +34,7 @@ from flask import (
     make_response,
     send_from_directory,
     flash,
+    abort,
 )
 from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
@@ -53,7 +54,8 @@ from commonlib.network import (
     infer_public_base_url,
     infer_allowed_origins,
 )
-from commonlib.storage import EncryptedJsonStore, JsonStore, StoreError
+from commonlib.storage import DailyKeyEncryptedJsonStore, StoreError
+from .services import ProductCatalog
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE_DIR / "templates"
@@ -80,6 +82,8 @@ SERVICE_MANAGER_EMAIL = (
 ).lower()
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-change-me")
 BANKING_SECRET_KEY = os.environ.get("BANKING_SECRET_KEY", SECRET_KEY)
+ACCOUNT_ENCRYPTION_SECRET = os.environ.get("ACCOUNT_ENCRYPTION_SECRET", SECRET_KEY)
+REVIEW_SECRET_KEY = os.environ.get("REVIEW_SECRET_KEY", ACCOUNT_ENCRYPTION_SECRET)
 FORCE_TLS = env_bool("FORCE_TLS", True)
 API_HOST = os.environ.get("API_HOST", "0.0.0.0")
 API_PORT = int(os.environ.get("API_PORT", "7890"))
@@ -169,7 +173,12 @@ def _wants_json_response() -> bool:
 def inject_template_globals():
     user = current_user_from_cookie()
     cart = _load_cart()
-    return {"current_user": user, "cart_count": sum(cart.values())}
+    return {
+        "current_user": user,
+        "cart_count": sum(cart.values()),
+        "current_year": datetime.datetime.now(datetime.UTC).year,
+        "site_settings": load_site_settings(),
+    }
 
 
 @app.route("/commonlib/<path:filename>")
@@ -252,7 +261,10 @@ def load_credentials() -> dict:
 FIREBASE_READY = False
 try:
     cred = credentials.Certificate(load_credentials())
-    firebase_admin.initialize_app(cred)
+    try:
+        firebase_admin.get_app()
+    except ValueError:
+        firebase_admin.initialize_app(cred)
     FIREBASE_READY = True
 except Exception as exc:  # optional
     print(f"Firebase Admin disabled: {exc}")
@@ -362,117 +374,233 @@ class BankingModel(BaseModel):
 # ---------------------------------------------------------------------------
 # Local JSON helpers (products + shopper accounts)
 # ---------------------------------------------------------------------------
+SITE_FILE = BASE_DIR / "site.json"
 PRODUCT_FILE = BASE_DIR / "products.json"
-PROFILE_FILE = BASE_DIR / "accounts.json"
-AUTH_FILE = BASE_DIR / "auth.json"
+PROFILE_FILE = BASE_DIR / "accounts.enc"
+AUTH_FILE = BASE_DIR / "auth.enc"
 BANKING_FILE = BASE_DIR / "banking.enc"
+REVIEWS_FILE = BASE_DIR / "reviews.enc"
 
-PROFILE_STORE = JsonStore(PROFILE_FILE, backups=PRODUCT_BACKUPS)
-AUTH_STORE = JsonStore(AUTH_FILE, backups=PRODUCT_BACKUPS)
-BANKING_STORE = EncryptedJsonStore(BANKING_FILE, BANKING_SECRET_KEY, backups=PRODUCT_BACKUPS)
-
-
-def _product_backup_path(path: Path, index: int) -> Path:
-    return path.with_suffix(path.suffix + f".bak{index}")
-
-
-def _product_candidates(path: Path) -> list[Path]:
-    candidates = [path]
-    for idx in range(1, PRODUCT_BACKUPS + 1):
-        candidates.append(_product_backup_path(path, idx))
-    return candidates
-
-
-def _product_rotate_backups(path: Path) -> None:
-    if PRODUCT_BACKUPS <= 0:
-        return
-    for idx in range(PRODUCT_BACKUPS, 0, -1):
-        src = path if idx == 1 else _product_backup_path(path, idx - 1)
-        dest = _product_backup_path(path, idx)
-        if src.exists():
-            try:
-                os.replace(src, dest)
-            except OSError:
-                continue
+SITE_DEFAULTS = {
+    "brand": "Vendly Sample Shop",
+    "tagline": "Local goods, instantly ready",
+    "hero": {
+        "eyebrow": "Welcome to Vendly",
+        "headline": "Showcase your shop with confidence",
+        "body": (
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam sit amet lorem sed "
+            "nisi bibendum tincidunt so every shop starts with a friendly description."
+        ),
+        "primary_button": {"label": "Shop collection", "href": "#products"},
+        "secondary_button": {"label": "View cart", "href": "/cart"},
+    },
+    "footer": {
+        "message": "Vendly makes it simple to launch a local storefront in minutes.",
+        "support_email": "hello@vendly.local",
+    },
+}
 
 
-def safe_write_json(path: Path, data: list) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _product_rotate_backups(path)
-    payload = json.dumps(data, indent=2)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as fh:
-        fh.write(payload)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp_path, path)
-    tmp_path.unlink(missing_ok=True)
-
-
-def safe_read_json(path: Path) -> list:
-    """Return a list from ``path`` or a redundant backup when available."""
-
-    for candidate in _product_candidates(Path(path)):
-        if not candidate.exists():
+def _merge_site_settings(defaults: dict, overrides: dict) -> dict:
+    merged = dict(defaults)
+    for key, value in overrides.items():
+        if key not in merged:
+            merged[key] = value
             continue
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_site_settings(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+_SITE_CACHE: dict[str, object] = {"path": None, "mtime": None, "data": SITE_DEFAULTS}
+
+
+def load_site_settings() -> dict:
+    """Load editable storefront settings from ``site.json``."""
+
+    global _SITE_CACHE
+    path = Path(SITE_FILE)
+    if _SITE_CACHE.get("path") != path:
+        _SITE_CACHE = {"path": path, "mtime": None, "data": SITE_DEFAULTS}
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(SITE_DEFAULTS, indent=2), encoding="utf-8")
         try:
-            raw = candidate.read_text(encoding="utf-8")
+            mtime = path.stat().st_mtime
         except OSError:
-            continue
-        if not raw:
-            return []
+            mtime = None
+        _SITE_CACHE = {"path": path, "mtime": mtime, "data": SITE_DEFAULTS}
+        return SITE_DEFAULTS
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return SITE_DEFAULTS
+    if _SITE_CACHE.get("mtime") != mtime:
         try:
-            data = json.loads(raw)
+            payload = json.loads(path.read_text(encoding="utf-8")) or {}
         except json.JSONDecodeError:
-            continue
-        if isinstance(data, list):
-            if candidate != Path(path):
-                print(f"Recovered product catalog from backup {candidate.name}")
-            return data
-    return []
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        _SITE_CACHE["data"] = _merge_site_settings(SITE_DEFAULTS, payload)
+        _SITE_CACHE["mtime"] = mtime
+    return _SITE_CACHE.get("data", SITE_DEFAULTS)  # type: ignore[return-value]
+
+
+PROFILE_STORE = DailyKeyEncryptedJsonStore(
+    PROFILE_FILE,
+    ACCOUNT_ENCRYPTION_SECRET,
+    backups=PRODUCT_BACKUPS,
+)
+AUTH_STORE = DailyKeyEncryptedJsonStore(
+    AUTH_FILE,
+    ACCOUNT_ENCRYPTION_SECRET,
+    backups=PRODUCT_BACKUPS,
+)
+BANKING_STORE = DailyKeyEncryptedJsonStore(
+    BANKING_FILE,
+    BANKING_SECRET_KEY,
+    backups=PRODUCT_BACKUPS,
+)
+REVIEWS_STORE = DailyKeyEncryptedJsonStore(
+    REVIEWS_FILE,
+    REVIEW_SECRET_KEY,
+    backups=PRODUCT_BACKUPS,
+)
+
+
+_PRODUCT_CATALOG: ProductCatalog | None = None
+
+
+def _get_product_catalog() -> ProductCatalog:
+    global _PRODUCT_CATALOG
+    if _PRODUCT_CATALOG is None or Path(_PRODUCT_CATALOG.path) != Path(PRODUCT_FILE):
+        _PRODUCT_CATALOG = ProductCatalog(PRODUCT_FILE, backups=PRODUCT_BACKUPS)
+    return _PRODUCT_CATALOG
 
 
 def list_products_local() -> list:
-    return safe_read_json(PRODUCT_FILE)
+    return _get_product_catalog().all()
 
 
 def append_product_local(doc: dict) -> str:
-    items = safe_read_json(PRODUCT_FILE)
-    doc_id = str(uuid4())
-    doc["id"] = doc_id
-    items.append(doc)
-    safe_write_json(PRODUCT_FILE, items)
-    return doc_id
+    created = _get_product_catalog().create(doc)
+    return str(created["id"])
 
 
 def get_product_local(doc_id: str) -> dict | None:
-    items = safe_read_json(PRODUCT_FILE)
-    for item in items:
-        if item.get("id") == doc_id:
-            return item
-    return None
+    return _get_product_catalog().get(doc_id)
 
 
 def update_product_local(doc_id: str, updates: dict) -> dict | None:
-    """Update product; returns updated product or None."""
-    items = safe_read_json(PRODUCT_FILE)
-    for item in items:
-        if item.get("id") == doc_id:
-            item.update({k: v for k, v in updates.items() if v is not None})
-            safe_write_json(PRODUCT_FILE, items)
-            return item
-    return None
+    return _get_product_catalog().update(doc_id, updates)
 
 
 def delete_product_local(doc_id: str) -> bool:
-    """Remove product from local JSON store. Returns True if deleted."""
-    items = safe_read_json(PRODUCT_FILE)
-    new_items = [p for p in items if p.get("id") != doc_id]
-    if len(new_items) == len(items):
-        return False
-    safe_write_json(PRODUCT_FILE, new_items)
-    return True
+    return _get_product_catalog().delete(doc_id)
+
+
+def list_reviews(product_id: str) -> list[dict]:
+    raw = REVIEWS_STORE.get(product_id, [])
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def review_summary(product_id: str) -> dict:
+    reviews = list_reviews(product_id)
+    count = len(reviews)
+    if not count:
+        return {"count": 0, "average": None}
+    total = sum(int(review.get("rating", 0) or 0) for review in reviews)
+    average = round(total / count, 1) if count else None
+    return {"count": count, "average": average}
+
+
+def add_product_review(product_id: str, user: dict, rating: int, comment: str) -> dict:
+    rating = max(1, min(5, int(rating)))
+    trimmed = comment.strip()
+    profile = load_profile(user["uid"], user.get("email"))
+    display_name = profile.get("name") or (user.get("email") or "Guest").split("@")[0]
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+    review = {
+        "id": str(uuid4()),
+        "rating": rating,
+        "comment": trimmed,
+        "created_at": now_iso,
+        "author": {
+            "uid": user["uid"],
+            "email": user.get("email"),
+            "name": display_name,
+        },
+    }
+    existing = list_reviews(product_id)
+    existing.append(review)
+    REVIEWS_STORE.put(product_id, existing)
+    return review
+
+
+WORK_IN_PROGRESS_SECTIONS = [
+    {
+        "name": "Inventory sync",
+        "description": "Automated stock reconciliation across connected devices.",
+    },
+    {
+        "name": "Marketing campaigns",
+        "description": "Plan seasonal promotions and track performance in one place.",
+    },
+    {
+        "name": "Customer loyalty",
+        "description": "Reward repeat customers with flexible loyalty rules.",
+    },
+]
+
+
+def build_sample_analytics(products: list[dict]) -> dict:
+    today = datetime.date.today()
+    timeline = []
+    for offset in range(6, -1, -1):
+        day = today - datetime.timedelta(days=offset)
+        timeline.append(
+            {
+                "label": day.strftime("%a"),
+                "visits": 120 + offset * 12,
+                "orders": 12 + max(0, 6 - offset),
+            }
+        )
+    total_reviews = 0
+    average_rating = None
+    ratings: list[float] = []
+    for product in products:
+        pid = product.get("id")
+        if not pid:
+            continue
+        summary = review_summary(str(pid))
+        total_reviews += summary.get("count", 0)
+        if summary.get("average"):
+            ratings.append(float(summary["average"]))
+    if ratings:
+        average_rating = round(sum(ratings) / len(ratings), 1)
+    return {
+        "totals": {
+            "products": len(products),
+            "reviews": total_reviews,
+            "avg_rating": average_rating,
+            "conversion": 3.4 if not timeline else round(3.0 + timeline[-1]["orders"] / 10, 1),
+        },
+        "timeline": timeline,
+        "top_products": [
+            {
+                "name": product.get("name", "Unnamed product"),
+                "price": product.get("price", 0),
+                "summary": review_summary(str(product.get("id"))) if product.get("id") else {"count": 0},
+            }
+            for product in products[:3]
+        ],
+    }
 
 
 def _blank_address() -> dict:
@@ -981,7 +1109,13 @@ def auth_login():
             resp = make_response(jsonify({"ok": True}))
         else:
             flash("Signed in successfully", "success")
-            resp = make_response(redirect(url_for("storefront_home")))
+            next_hint = request.args.get("next") or payload.get("next")
+            redirect_target = (
+                next_hint
+                if next_hint and str(next_hint).startswith("/")
+                else url_for("storefront_home")
+            )
+            resp = make_response(redirect(redirect_target))
         _set_session_cookie(resp, uid, record.get("email") or email)
         return resp
     except Exception as exc:
@@ -1239,10 +1373,16 @@ def admin_account_banking(uid):
 def storefront_home():
     products = list_products_local()
     cart = _load_cart()
+    review_meta = {
+        product.get("id"): review_summary(str(product.get("id")))
+        for product in products
+        if product.get("id")
+    }
     return render_template(
         "storefront/home.html",
         products=products,
         cart_count=sum(cart.values()),
+        review_meta=review_meta,
     )
 
 
@@ -1251,6 +1391,48 @@ def storefront_cart():
     cart = _load_cart()
     items, total = _cart_items_with_totals(cart)
     return render_template("storefront/cart.html", items=items, total=total)
+
+
+@app.route("/catalog/<product_id>")
+def product_detail(product_id: str):
+    product = get_product_local(product_id)
+    if not product:
+        abort(404)
+    meta = review_summary(product_id)
+    reviews = list_reviews(product_id)
+    return render_template(
+        "storefront/product_detail.html",
+        product=product,
+        review_meta=meta,
+        reviews=reviews,
+    )
+
+
+@app.route("/catalog/<product_id>/reviews", methods=["POST"])
+def product_review_submit(product_id: str):
+    product = get_product_local(product_id)
+    if not product:
+        flash("Product not found", "danger")
+        return redirect(url_for("storefront_home"))
+    user = current_user_from_cookie()
+    if not user:
+        flash("Please sign in to leave a rating.", "warning")
+        login_url = url_for(
+            "auth_login",
+            next=url_for("product_detail", product_id=product_id),
+        )
+        return redirect(login_url)
+    try:
+        rating = int(request.form.get("rating", "5"))
+    except ValueError:
+        rating = 5
+    comment = (request.form.get("comment", "") or "").strip()
+    if not comment:
+        flash("Share a quick comment with your rating so other shoppers benefit.", "warning")
+        return redirect(url_for("product_detail", product_id=product_id))
+    add_product_review(product_id, user, rating, comment[:1000])
+    flash("Thanks for sharing your experience!", "success")
+    return redirect(url_for("product_detail", product_id=product_id))
 
 
 @app.route("/cart/add/<product_id>", methods=["POST"])
@@ -1395,7 +1577,20 @@ def account_banking():
 @app.route("/admin")
 def admin_dashboard():
     products = list_products_local()
-    return render_template("admin/dashboard.html", products=products)
+    analytics = build_sample_analytics(products)
+    review_lookup = {
+        product.get("id"): review_summary(str(product.get("id")))
+        for product in products
+        if product.get("id")
+    }
+    return render_template(
+        "admin/dashboard.html",
+        products=products,
+        analytics=analytics,
+        work_in_progress=WORK_IN_PROGRESS_SECTIONS,
+        service_manager_email=SERVICE_MANAGER_EMAIL,
+        review_meta_map=review_lookup,
+    )
 
 
 @app.route("/admin/products/create", methods=["POST"])

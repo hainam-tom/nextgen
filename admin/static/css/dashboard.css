@@ -1,43 +1,227 @@
-body {
-  background-color: #11161f;
+:root {
+  --vendly-bg: #070b14;
+  --vendly-surface: rgba(20, 26, 36, 0.92);
+  --vendly-surface-alt: rgba(32, 40, 55, 0.9);
+  --vendly-border: rgba(255, 255, 255, 0.08);
+  --vendly-primary: #6c8bff;
+  --vendly-primary-dark: #516fe2;
+  --vendly-accent: #52dec8;
+  --vendly-text-muted: rgba(255, 255, 255, 0.68);
+}
+
+body.app-body {
+  min-height: 100vh;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(82, 222, 200, 0.18), transparent 55%),
+    radial-gradient(circle at 80% 0%, rgba(108, 139, 255, 0.25), transparent 60%),
+    linear-gradient(180deg, #04070f 0%, var(--vendly-bg) 70%, #04070f 100%);
   color: #f8f9fa;
 }
 
-.card {
-  background: #1c212d;
-  border: 1px solid #2b3442;
-  border-radius: 0.75rem;
-  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.35);
+.navbar-glass {
+  background-color: rgba(6, 10, 18, 0.82) !important;
+  backdrop-filter: blur(18px);
+  border-color: rgba(108, 139, 255, 0.22) !important;
+  box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.45);
 }
 
-.card h2,
+.navbar-brand {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.main-content {
+  max-width: 1140px;
+}
+
+.card {
+  background: var(--vendly-surface);
+  border: 1px solid var(--vendly-border);
+  border-radius: 1rem;
+  box-shadow: 0 1.75rem 4rem rgba(0, 0, 0, 0.35);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 2.25rem 4.5rem rgba(0, 0, 0, 0.45);
+}
+
 .card h1,
+.card h2,
+.card h5,
 .card-title {
   color: #f8f9fa;
 }
 
-.navbar,
-.list-group-item {
-  background-color: #0d121c !important;
-  border-color: #1f2a3a !important;
-}
-
 .btn-primary {
-  background-color: #5b7fff;
-  border-color: #5b7fff;
+  background: linear-gradient(120deg, var(--vendly-primary), var(--vendly-primary-dark));
+  border: none;
+  box-shadow: 0 0.75rem 1.75rem rgba(108, 139, 255, 0.35);
 }
 
-.btn-primary:hover {
-  background-color: #4a6ae0;
-  border-color: #4a6ae0;
+.btn-primary:hover,
+.btn-primary:focus {
+  background: linear-gradient(120deg, var(--vendly-primary-dark), var(--vendly-primary));
+  box-shadow: 0 1rem 2rem rgba(108, 139, 255, 0.45);
 }
 
 .btn-outline-light {
   border-color: rgba(255, 255, 255, 0.4);
   color: #f8f9fa;
+  backdrop-filter: blur(6px);
+}
+
+.btn-outline-light:hover {
+  background-color: rgba(255, 255, 255, 0.12);
 }
 
 .alert {
-  border-radius: 0.75rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background-color: rgba(17, 21, 31, 0.9);
+  color: #f8f9fa;
+}
+
+.hero-panel {
+  background: linear-gradient(135deg, rgba(82, 222, 200, 0.25), rgba(108, 139, 255, 0.15));
+  border: 1px solid rgba(108, 139, 255, 0.25);
+  padding: 2.5rem;
+  border-radius: 1.5rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 85% 15%, rgba(108, 139, 255, 0.45), transparent 40%);
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.hero-panel p {
+  color: var(--vendly-text-muted);
+}
+
+.badge-soft {
+  background-color: rgba(82, 222, 200, 0.15);
+  color: #6cf3db;
+  border: 1px solid rgba(82, 222, 200, 0.35);
+}
+
+.product-card {
+  background: var(--vendly-surface-alt);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 1.75rem;
+}
+
+.product-card__media {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.25rem;
+}
+
+.product-card__placeholder {
+  width: 96px;
+  height: 96px;
+  border-radius: 1.25rem;
+  background: linear-gradient(145deg, rgba(82, 222, 200, 0.18), rgba(108, 139, 255, 0.22));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.product-card__image {
+  width: 100%;
+  border-radius: 1.25rem;
+  object-fit: cover;
+  max-height: 180px;
+}
+
+.product-card__description {
+  color: var(--vendly-text-muted);
+}
+
+.product-card__price {
+  font-weight: 600;
+}
+
+.product-card .btn {
+  gap: 0.25rem;
+}
+
+.cart-summary-card {
+  background: rgba(6, 12, 21, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.product-detail__media {
+  background: rgba(9, 15, 24, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.5rem;
+  padding: 1.5rem;
+}
+
+.product-detail__placeholder {
+  height: 260px;
+  color: var(--vendly-text-muted);
+  background: linear-gradient(135deg, rgba(108, 139, 255, 0.15), rgba(82, 222, 200, 0.18));
+  border-radius: 1.25rem;
+}
+
+.metric-tile {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.25rem;
+  padding: 1rem 1.25rem;
+  background: rgba(9, 15, 24, 0.85);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.metric-tile__label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vendly-text-muted);
+}
+
+.metric-tile__value {
+  display: block;
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.list-group-item {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.catalog-form .form-control,
+.catalog-form .form-select,
+.catalog-form textarea {
+  background-color: rgba(7, 10, 18, 0.9);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: #f8f9fa;
+}
+
+.catalog-form .form-control:focus,
+.catalog-form .form-select:focus {
+  background-color: rgba(7, 10, 18, 0.95);
+  border-color: var(--vendly-primary);
+  box-shadow: 0 0 0 0.25rem rgba(108, 139, 255, 0.25);
+}
+
+footer.app-footer {
+  background: rgba(5, 7, 13, 0.92);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 4rem;
+  padding: 2rem 0;
+  color: var(--vendly-text-muted);
 }
