@@ -86,14 +86,15 @@ function Check-PortForward($Port) {
     }
 }
 
-function Format-Origin([string]$Scheme, [string]$Host, [int]$Port) {
-    if ([string]::IsNullOrWhiteSpace($Host)) { return '' }
+function Format-Origin([string]$Scheme, [string]$HostName, [int]$Port) {
+    if ([string]::IsNullOrWhiteSpace($HostName)) { return '' }
     $scheme = $Scheme.ToLowerInvariant()
     if ($scheme -ne 'http' -and $scheme -ne 'https') { return '' }
     $defaultPort = if ($scheme -eq 'https') { 443 } else { 80 }
     $suffix = if ($Port -eq $defaultPort) { '' } else { ":$Port" }
-    return "$scheme://$Host$suffix"
+    return ("{0}://{1}{2}" -f $scheme, $HostName, $suffix)
 }
+
 
 function Build-AllowedOrigins($ApiPort, $ForceTls, $PublicBase, $FallbackHost, $Domain, $PublicPort) {
     $scheme = if ($ForceTls) { 'https' } else { 'http' }
@@ -120,7 +121,7 @@ function Build-AllowedOrigins($ApiPort, $ForceTls, $PublicBase, $FallbackHost, $
             # ignore invalid URI
         }
     }
-    $origins | Where-Object { $_ } | Select-Object -Unique -Join ','
+    return (($origins | Where-Object { $_ } | Select-Object -Unique) -join ',')
 }
 
 function Write-EnvFile($RepoRoot, $Port, $ForceTls, $PublicBase, $FallbackHost, $Domain, $PublicPort, $CertPath, $KeyPath, $LeEmail) {
@@ -420,7 +421,7 @@ if (Test-EnvTruthy $envForceTls) { $forceTls = $true }
 
 if ($useDomain) {
     Write-Host ''
-    Write-Host "TLS configuration for $domain:"
+    Write-Host "TLS configuration for ${domain}:"
     Write-Host '  [1] Automatic Lets Encrypt certificate (recommended)'
     Write-Host '  [2] Provide existing certificate paths'
     Write-Host '  [3] Self-signed development certificate'

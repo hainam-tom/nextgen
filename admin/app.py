@@ -106,7 +106,8 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 SESSION_COOKIE_NAME = "vendly_session"
 SESSION_MAX_DAYS = int(os.environ.get("SESSION_MAX_DAYS", "5"))
 SESSION_SERIALIZER = URLSafeTimedSerializer(SECRET_KEY, salt="vendly-user-session")
-
+import sys
+# remove the Flask app module and possibly the package if needed
 # ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
